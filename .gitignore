@@ -2,3 +2,4 @@
 profiles/*.json
 **/__pycache__
 data/hands/
+.pytest_cache/
