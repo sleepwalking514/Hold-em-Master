@@ -1,0 +1,100 @@
+{
+  "hand_id": 1,
+  "timestamp": "2026-04-20T10:09:40.785239",
+  "blinds": [
+    5,
+    10
+  ],
+  "players": [
+    {
+      "name": "Player1",
+      "position": "SB",
+      "stack": 3000,
+      "hole_cards": [
+        "Kh",
+        "9d"
+      ]
+    },
+    {
+      "name": "Player2",
+      "position": "BB",
+      "stack": 1000
+    }
+  ],
+  "board": [
+    "8d",
+    "Jc",
+    "5c",
+    "Qc",
+    "Js"
+  ],
+  "actions": [
+    {
+      "street": "preflop",
+      "player": "Player1",
+      "action": "call",
+      "amount": 10
+    },
+    {
+      "street": "preflop",
+      "player": "Player2",
+      "action": "raise",
+      "amount": 20
+    },
+    {
+      "street": "preflop",
+      "player": "Player1",
+      "action": "call",
+      "amount": 20
+    },
+    {
+      "street": "flop",
+      "player": "Player2",
+      "action": "check"
+    },
+    {
+      "street": "flop",
+      "player": "Player1",
+      "action": "check"
+    },
+    {
+      "street": "turn",
+      "player": "Player2",
+      "action": "bet",
+      "amount": 20
+    },
+    {
+      "street": "turn",
+      "player": "Player1",
+      "action": "raise",
+      "amount": 40
+    },
+    {
+      "street": "turn",
+      "player": "Player2",
+      "action": "raise",
+      "amount": 60
+    },
+    {
+      "street": "turn",
+      "player": "Player1",
+      "action": "call",
+      "amount": 60
+    },
+    {
+      "street": "river",
+      "player": "Player2",
+      "action": "all_in",
+      "amount": 920
+    },
+    {
+      "street": "river",
+      "player": "Player1",
+      "action": "all_in",
+      "amount": 920
+    }
+  ],
+  "winnings": {
+    "Player1": 2000
+  }
+}

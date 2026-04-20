@@ -1,0 +1,10 @@
+# Phase 1: 游戏环境 + CLI + 回测框架
+numpy>=1.24
+treys>=0.1.8
+rich>=13.0
+prompt-toolkit>=3.0
+click>=8.0
+
+# Phase 4 (Web版，暂不安装)
+# fastapi>=0.100
+# uvicorn>=0.23
