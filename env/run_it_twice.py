@@ -20,6 +20,8 @@ def run_it_twice(
     remaining_board_1: list[int],
     remaining_board_2: list[int],
 ) -> RunItTwiceResult:
+    game_state.calculate_side_pots()
+
     gs1 = copy.deepcopy(game_state)
     gs2 = copy.deepcopy(game_state)
 
@@ -33,7 +35,8 @@ def run_it_twice(
     gs2.pot = half_pot
 
     for sp in gs1.side_pots:
-        sp.amount = sp.amount // 2 + sp.amount % 2
+        orig = sp.amount
+        sp.amount = orig // 2 + orig % 2
     for sp in gs2.side_pots:
         sp.amount = sp.amount // 2
 

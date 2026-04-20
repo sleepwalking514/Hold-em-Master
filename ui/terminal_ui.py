@@ -10,6 +10,7 @@ from treys import Card, Evaluator
 
 from env.game_state import GameState, Player
 from env.action_space import Street, GameMode
+from env.run_it_twice import RunItTwiceResult
 
 console = Console()
 _EVALUATOR = Evaluator()
@@ -177,3 +178,35 @@ def display_message(msg: str, style: str = "") -> None:
 
 def display_error(msg: str) -> None:
     console.print(f"[bold red]错误: {msg}[/bold red]")
+
+
+def _display_board_showdown(gs: GameState, board: list[int], label: str, winnings: dict[str, int]) -> None:
+    console.print(f"\n── {label} ──", style="bold yellow")
+    board_text = Text("  公共牌: ")
+    board_text.append_text(_cards_text(board))
+    console.print(board_text)
+    in_hand = gs.players_in_hand
+    for p in in_hand:
+        if len(p.hole_cards) == 2 and len(board) >= 5:
+            best, rank = _best_five(board, p.hole_cards)
+            rank_class = _EVALUATOR.get_rank_class(rank)
+            rank_str = _EVALUATOR.class_to_string(rank_class)
+            text = Text(f"  {p.name}: ")
+            text.append_text(_cards_text(p.hole_cards))
+            text.append(f"  → {rank_str}  ", style="bold")
+            text.append_text(_cards_text(best))
+            console.print(text)
+        else:
+            console.print(f"  {p.name}: [未知]", style="dim")
+    for name, amount in winnings.items():
+        if amount > 0:
+            console.print(f"  {name} 赢得 {amount}", style="bold green")
+
+
+def display_run_it_twice(gs: GameState, result: RunItTwiceResult) -> None:
+    _display_board_showdown(gs, result.board_1, "第一次发牌", result.winnings_1)
+    _display_board_showdown(gs, result.board_2, "第二次发牌", result.winnings_2)
+    console.print("\n── 最终结算 ──", style="bold yellow")
+    for name, amount in result.combined.items():
+        if amount > 0:
+            console.print(f"  {name} 总共赢得 {amount}", style="bold green")

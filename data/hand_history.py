@@ -33,7 +33,7 @@ def export_hand(gs: GameState, winnings: dict[str, int]) -> Path:
         pd: dict[str, Any] = {
             "name": p.name,
             "position": p.position,
-            "stack": p.stack + p.total_invested,
+            "stack": p.initial_stack if p.initial_stack > 0 else p.stack,
         }
         if p.hole_cards:
             pd["hole_cards"] = _card_strs(p.hole_cards)

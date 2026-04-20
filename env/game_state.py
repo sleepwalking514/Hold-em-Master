@@ -23,6 +23,7 @@ class Player:
     street_invested: int = 0
     total_invested: int = 0
     has_acted: bool = False
+    initial_stack: int = 0
 
     def reset_for_new_street(self) -> None:
         self.current_bet = 0
@@ -37,6 +38,7 @@ class Player:
         self.street_invested = 0
         self.total_invested = 0
         self.has_acted = False
+        self.initial_stack = self.stack
 
 
 @dataclass
@@ -92,6 +94,10 @@ class GameState:
     # --- blinds ---
 
     def post_blinds(self) -> None:
+        for p in self.players:
+            if p.initial_stack == 0:
+                p.initial_stack = p.stack
+
         n = len(self.players)
         if n == 2:
             sb_idx = self.dealer_idx
@@ -269,7 +275,7 @@ class GameState:
             remaining += leftover
             if leftover > 0 or invested > prev_level:
                 p = self.get_player(name)
-                if p.is_active:
+                if p.is_active or p.is_all_in:
                     eligible.append(name)
         if remaining > 0:
             pots.append(SidePot(amount=remaining, eligible=eligible))
@@ -293,9 +299,13 @@ class GameState:
             winnings[winner.name] = self.pot
             winner.stack += self.pot
             self.pot = 0
+            self.side_pots = []
+            for p in self.players:
+                p.total_invested = 0
             return winnings
 
-        self.calculate_side_pots()
+        if not self.side_pots:
+            self.calculate_side_pots()
 
         for side_pot in self.side_pots:
             contenders = [
@@ -320,6 +330,8 @@ class GameState:
 
         self.pot = 0
         self.side_pots = []
+        for p in self.players:
+            p.total_invested = 0
         return winnings
 
     # --- new hand ---

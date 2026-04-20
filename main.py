@@ -7,10 +7,12 @@ from rich.console import Console
 
 from env.game_state import GameState, Player
 from env.action_space import ActionType, PlayerAction, Street, GameMode
+from env.run_it_twice import run_it_twice
 from ui.card_parser import parse_cards, validate_no_duplicates, card_to_short, random_cards
 from ui.terminal_ui import (
     display_table, display_hero_cards, display_action_prompt,
-    display_showdown, display_settlement, display_message, display_error, console,
+    display_showdown, display_settlement, display_message, display_error,
+    display_run_it_twice, console,
 )
 from ui.session_manager import setup_session, rebuy_prompt
 from data.hand_history import export_hand
@@ -115,6 +117,68 @@ def _show_hand_history(gs: GameState) -> None:
                 display_message(f"    {a}")
 
 
+def _remaining_board_count(gs: GameState) -> int:
+    return 5 - len(gs.board)
+
+
+def _ask_run_it_twice() -> bool:
+    while True:
+        raw = input("发一次还是两次? [1] 一次  [2] 两次: ").strip()
+        if raw == "1":
+            return False
+        if raw == "2":
+            return True
+
+
+def _deal_remaining_streets(gs: GameState) -> None:
+    dealt = len(gs.board)
+    if dealt < 3:
+        gs.advance_street()
+        cards = read_board_cards(gs, 3 - dealt)
+        gs.board.extend(cards)
+        dealt = 3
+    if dealt < 4:
+        gs.advance_street()
+        cards = read_board_cards(gs, 1)
+        gs.board.extend(cards)
+        dealt = 4
+    if dealt < 5:
+        gs.advance_street()
+        cards = read_board_cards(gs, 1)
+        gs.board.extend(cards)
+
+
+def handle_allin_runout(gs: GameState, hero_name: str) -> dict[str, int]:
+    remaining = _remaining_board_count(gs)
+    if remaining <= 0:
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+        return winnings
+
+    run_twice = _ask_run_it_twice()
+
+    if not run_twice:
+        _deal_remaining_streets(gs)
+        display_table(gs, hero_name)
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+        return winnings
+    else:
+        board_1 = random_cards(remaining, gs.used_cards)
+        used_for_2 = gs.used_cards | set(board_1)
+        board_2 = random_cards(remaining, used_for_2)
+        result = run_it_twice(gs, board_1, board_2)
+        display_run_it_twice(gs, result)
+        for name, amount in result.combined.items():
+            p = gs.get_player(name)
+            p.stack += amount
+        gs.pot = 0
+        gs.side_pots = []
+        return result.combined
+
+
 def play_street(gs: GameState, hero_name: str) -> bool:
     """Play one betting round. Returns True if hand should continue."""
     action_order = gs.get_action_order()
@@ -178,19 +242,34 @@ def deal_hole_cards(gs: GameState, hero_name: str) -> None:
         display_hero_cards(hero.hole_cards)
 
 
+def _is_allin_runout_needed(gs: GameState) -> bool:
+    in_hand = gs.players_in_hand
+    if len(in_hand) <= 1:
+        return False
+    active_not_allin = [p for p in in_hand if p.is_active and not p.is_all_in]
+    return len(active_not_allin) == 0 and len(gs.board) < 5
+
+
+def _finish_hand(gs: GameState, winnings: dict[str, int], hero_name: str) -> None:
+    if gs.game_mode == GameMode.LIVE:
+        record_showdown_cards(gs, hero_name)
+    path = export_hand(gs, winnings)
+    display_message(f"  手牌记录已保存: {path}", style="dim")
+
+
 def play_hand(gs: GameState, hero_name: str) -> None:
     display_table(gs, hero_name)
     deal_hole_cards(gs, hero_name)
 
     if not play_street(gs, hero_name):
         display_table(gs, hero_name)
-        display_showdown(gs)
-        winnings = gs.settle()
-        display_settlement(winnings)
-        if gs.game_mode == GameMode.LIVE:
-            record_showdown_cards(gs, hero_name)
-        path = export_hand(gs, winnings)
-        display_message(f"  手牌记录已保存: {path}", style="dim")
+        if _is_allin_runout_needed(gs):
+            winnings = handle_allin_runout(gs, hero_name)
+        else:
+            display_showdown(gs)
+            winnings = gs.settle()
+            display_settlement(winnings)
+        _finish_hand(gs, winnings, hero_name)
         return
 
     display_table(gs, hero_name)
@@ -205,6 +284,10 @@ def play_hand(gs: GameState, hero_name: str) -> None:
 
         if not play_street(gs, hero_name):
             display_table(gs, hero_name)
+            if _is_allin_runout_needed(gs):
+                winnings = handle_allin_runout(gs, hero_name)
+                _finish_hand(gs, winnings, hero_name)
+                return
             break
 
         display_table(gs, hero_name)
@@ -212,13 +295,13 @@ def play_hand(gs: GameState, hero_name: str) -> None:
         if gs.is_hand_over():
             break
 
-    display_showdown(gs)
-    winnings = gs.settle()
-    display_settlement(winnings)
-    if gs.game_mode == GameMode.LIVE:
-        record_showdown_cards(gs, hero_name)
-    path = export_hand(gs, winnings)
-    display_message(f"  手牌记录已保存: {path}", style="dim")
+    if _is_allin_runout_needed(gs):
+        winnings = handle_allin_runout(gs, hero_name)
+    else:
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+    _finish_hand(gs, winnings, hero_name)
 
 
 def handle_rebuys(gs: GameState, hero_name: str) -> None:
