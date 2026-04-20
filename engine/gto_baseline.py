@@ -50,9 +50,13 @@ def _preflop_baseline(game_state: GameState, hero: Player) -> dict:
     if not opponents:
         eff_bb = hero.stack / game_state.big_blind
     else:
-        eff_bb = min(
-            effective_stack_bb(hero, v, game_state.big_blind) for v in opponents
+        opp_effs = sorted(
+            [effective_stack_bb(hero, v, game_state.big_blind) for v in opponents],
+            reverse=True,
         )
+        # Use the largest effective stack (main threat) rather than the smallest
+        # Short stacks don't dictate our strategy — the deep opponents do
+        eff_bb = opp_effs[0]
 
     facing_raise = game_state.current_bet > game_state.big_blind
     facing_3bet = False
@@ -75,6 +79,7 @@ def _preflop_baseline(game_state: GameState, hero: Player) -> dict:
         PreflopAction.CALL: ActionType.CALL,
         PreflopAction.CHECK: ActionType.CHECK,
         PreflopAction.THREE_BET: ActionType.RAISE,
+        PreflopAction.FOUR_BET: ActionType.RAISE,
         PreflopAction.PUSH: ActionType.ALL_IN,
     }
 
@@ -98,6 +103,7 @@ def _postflop_baseline(game_state: GameState, hero: Player) -> dict:
 
     advice = get_postflop_advice(
         strength, is_ip, facing_bet, current_spr, texture.is_wet,
+        mix=False,
     )
 
     postflop_to_action = {

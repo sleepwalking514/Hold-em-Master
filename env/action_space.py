@@ -8,6 +8,7 @@ from typing import Optional
 class GameMode(Enum):
     LIVE = "live"
     TEST = "test"
+    SIM = "sim"
 
 
 class Street(Enum):

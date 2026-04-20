@@ -32,7 +32,7 @@ class BayesianStat:
         n = self.observations
         if n <= 0:
             return 0.0
-        return 1 - 1 / (1 + math.sqrt(n))
+        return 1 - 1 / (1 + n / 15.0)
 
     def to_dict(self) -> dict:
         return {

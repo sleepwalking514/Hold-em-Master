@@ -4,6 +4,7 @@ import sys
 
 import click
 from rich.console import Console
+from rich.prompt import Prompt, IntPrompt
 
 from env.game_state import GameState, Player
 from env.action_space import ActionType, PlayerAction, Street, GameMode
@@ -15,9 +16,12 @@ from ui.terminal_ui import (
     display_run_it_twice, console,
 )
 from ui.session_manager import setup_session, rebuy_prompt
-from data.hand_history import export_hand
+from data.hand_history import export_hand, SessionRecorder, HandRecorder
+from data.session_charts import generate_session_charts
 from engine.advisor import Advisor
-from profiler.profile_manager import load_or_create, save_profile
+from profiler.profile_manager import (
+    load_or_create, save_profile, available_prior_types, create_profile, PRIOR_TEMPLATES,
+)
 from profiler.player_profile import PlayerProfile
 from profiler.action_analyzer import ActionRationalityAnalyzer
 
@@ -71,11 +75,54 @@ def read_board_cards(gs: GameState, count: int) -> list[int]:
             display_error(str(e))
 
 
-def read_player_action(player: Player, gs: GameState) -> PlayerAction:
+def _advice_hint(advice: dict) -> str:
+    action = advice.get("action")
+    amount = advice.get("amount", 0)
+    label = action.value if hasattr(action, "value") else str(action)
+    if amount:
+        return f"{label} {amount}"
+    return label
+
+
+def _advice_to_action(player: Player, gs: GameState, advice: dict) -> PlayerAction:
+    action_type = advice.get("action")
+    amount = advice.get("amount", 0)
+
+    if action_type == ActionType.FOLD:
+        return PlayerAction(player.name, ActionType.FOLD)
+
+    if action_type == ActionType.CHECK:
+        return PlayerAction(player.name, ActionType.CHECK)
+
+    if action_type == ActionType.CALL:
+        call_amount = gs.current_bet - player.current_bet
+        if call_amount >= player.stack:
+            return PlayerAction(player.name, ActionType.ALL_IN, amount=player.stack + player.current_bet)
+        return PlayerAction(player.name, ActionType.CALL, amount=gs.current_bet)
+
+    if action_type == ActionType.ALL_IN:
+        return PlayerAction(player.name, ActionType.ALL_IN, amount=player.stack + player.current_bet)
+
+    if action_type in (ActionType.BET, ActionType.RAISE):
+        if amount >= player.stack + player.current_bet:
+            return PlayerAction(player.name, ActionType.ALL_IN, amount=player.stack + player.current_bet)
+        at = ActionType.BET if gs.current_bet == 0 else ActionType.RAISE
+        return PlayerAction(player.name, at, amount=max(amount, gs.get_min_raise()))
+
+    return PlayerAction(player.name, ActionType.CHECK)
+
+
+def read_player_action(player: Player, gs: GameState,
+                       advice: dict | None = None) -> PlayerAction:
     display_action_prompt(player, gs)
+    if advice:
+        hint = _advice_hint(advice)
+        console.print(f"  [dim](Enter=采纳建议: {hint})[/dim]")
     while True:
         raw = input("  > ").strip().upper()
         if not raw:
+            if advice:
+                return _advice_to_action(player, gs, advice)
             continue
 
         if raw == "F":
@@ -129,6 +176,25 @@ def _show_opponent_profiles(gs: GameState, hero_name: str) -> None:
         if p.name != hero_name:
             profile = load_or_create(p.name)
             console.print(f"  [bold]{profile.summary()}[/bold]")
+
+
+def _ask_prior_type(player_name: str) -> str:
+    """为新对手选择先验类型。"""
+    types = available_prior_types()
+    console.print(f"\n  为 [bold]{player_name}[/bold] 选择先验类型:")
+    for i, t in enumerate(types):
+        console.print(f"    [{i+1}] {t}")
+    console.print(f"    [Enter] 跳过 (未知)")
+    raw = input("    > ").strip()
+    if not raw:
+        return "未知"
+    try:
+        idx = int(raw) - 1
+        if 0 <= idx < len(types):
+            return types[idx]
+    except ValueError:
+        pass
+    return "未知"
 
 
 def _remaining_board_count(gs: GameState) -> int:
@@ -193,7 +259,8 @@ def handle_allin_runout(gs: GameState, hero_name: str) -> dict[str, int]:
         return result.combined
 
 
-def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None) -> bool:
+def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None,
+                hand_rec: HandRecorder | None = None) -> bool:
     """Play one betting round. Returns True if hand should continue."""
     action_order = gs.get_action_order()
     if len(action_order) <= 1 and gs.street != Street.PREFLOP:
@@ -206,6 +273,7 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None) -
             if not player.is_active or player.is_all_in:
                 continue
 
+            advice = None
             if advisor and player.name == hero_name and player.hole_cards:
                 try:
                     advice = advisor.get_advice(gs, player)
@@ -215,9 +283,16 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None) -
                 except Exception:
                     pass
 
-            action = read_player_action(player, gs)
+            action = read_player_action(player, gs, advice)
             gs.apply_action(action)
             display_message(f"  {action}", style="dim")
+
+            if hand_rec:
+                hand_rec.record_action(
+                    gs.street, player.name, action,
+                    advisor_text=advice["text"] if advice else None,
+                    advisor_data=advice if advice else None,
+                )
 
             if gs.is_hand_over():
                 return False
@@ -274,12 +349,19 @@ def _is_allin_runout_needed(gs: GameState) -> bool:
 
 
 def _finish_hand(gs: GameState, winnings: dict[str, int], hero_name: str,
-                  advisor: Advisor | None = None) -> None:
+                  advisor: Advisor | None = None,
+                  session_rec: SessionRecorder | None = None,
+                  hand_rec: HandRecorder | None = None) -> None:
     if gs.game_mode == GameMode.LIVE:
         record_showdown_cards(gs, hero_name)
     if advisor:
         _update_opponent_profiles(gs, hero_name, advisor, winnings)
-    path = export_hand(gs, winnings)
+    if session_rec:
+        path = session_rec.export_hand(gs, winnings, hand_rec)
+        if advisor and advisor.profiles:
+            session_rec.record_profile_snapshot(gs.hand_number, advisor.profiles)
+    else:
+        path = export_hand(gs, winnings)
     display_message(f"  手牌记录已保存: {path}", style="dim")
 
 
@@ -517,7 +599,8 @@ def _update_opponent_profiles(gs: GameState, hero_name: str, advisor: Advisor,
 
     for name, profile in advisor.profiles.items():
         profile.total_hands += 1
-        save_profile(profile)
+        if gs.game_mode != GameMode.SIM:
+            save_profile(profile)
 
 
 def _update_advanced_actions(
@@ -725,11 +808,13 @@ def _estimate_pot_sizes(gs: GameState) -> dict[Street, int]:
     return sizes
 
 
-def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None) -> None:
+def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None,
+              session_rec: SessionRecorder | None = None) -> None:
+    hand_rec = HandRecorder()
     display_table(gs, hero_name)
     deal_hole_cards(gs, hero_name)
 
-    if not play_street(gs, hero_name, advisor):
+    if not play_street(gs, hero_name, advisor, hand_rec):
         display_table(gs, hero_name)
         if _is_allin_runout_needed(gs):
             winnings = handle_allin_runout(gs, hero_name)
@@ -737,7 +822,7 @@ def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None) -> 
             display_showdown(gs)
             winnings = gs.settle()
             display_settlement(winnings)
-        _finish_hand(gs, winnings, hero_name, advisor)
+        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
         return
 
     display_table(gs, hero_name)
@@ -748,13 +833,14 @@ def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None) -> 
         count = STREET_CARD_COUNT[street]
         board_cards = read_board_cards(gs, count)
         gs.board.extend(board_cards)
+        hand_rec.record_board(street.name, gs.board[:])
         display_table(gs, hero_name)
 
-        if not play_street(gs, hero_name, advisor):
+        if not play_street(gs, hero_name, advisor, hand_rec):
             display_table(gs, hero_name)
             if _is_allin_runout_needed(gs):
                 winnings = handle_allin_runout(gs, hero_name)
-                _finish_hand(gs, winnings, hero_name, advisor)
+                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
                 return
             break
 
@@ -769,7 +855,7 @@ def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None) -> 
         display_showdown(gs)
         winnings = gs.settle()
         display_settlement(winnings)
-    _finish_hand(gs, winnings, hero_name, advisor)
+    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
 
 
 def handle_rebuys(gs: GameState, hero_name: str) -> None:
@@ -784,11 +870,547 @@ def handle_rebuys(gs: GameState, hero_name: str) -> None:
                 display_message(f"{p.name} 补充筹码到 {amount}")
 
 
+# ============ Sim Mode ============
+
+_SIM_AI_OPPONENTS: dict[str, "AIOpponent"] = {}
+_SIM_MODE_ACTIVE = False
+
+STYLE_ALIASES = {
+    "TAG": "紧凶TAG", "LAG": "松凶LAG", "Nit": "极紧Nit",
+    "Fish": "跟注站", "Maniac": "疯子Maniac", "CallStation": "跟注站",
+    "紧弱": "紧弱", "岩石": "岩石",
+}
+
+
+def _pick_style_interactive(player_name: str) -> str:
+    """让用户为一个AI对手选择风格。"""
+    from testing.simulation.label_presets import all_labels
+    sim_labels = all_labels()
+    console.print(f"\n  为 [bold]{player_name}[/bold] 选择风格:")
+    for i, label in enumerate(sim_labels):
+        console.print(f"    [{i+1}] {label}")
+    console.print(f"    [R] 随机")
+    while True:
+        raw = input("    > ").strip().upper()
+        if raw == "R":
+            import random
+            return random.choice(sim_labels)
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(sim_labels):
+                return sim_labels[idx]
+        except ValueError:
+            pass
+        display_error("无效选择")
+
+
+def quick_sim_session() -> tuple[GameState, str, dict[str, "AIOpponent"]]:
+    """快速启动：5个随机风格AI对手。"""
+    import random as _rng
+    from testing.simulation.label_presets import get_preset, all_labels
+    from testing.simulation.ai_opponent import AIOpponent
+
+    labels = all_labels()
+    hero_name = "Hero"
+    players = [Player(name=hero_name, stack=1000)]
+    ai_opponents: dict[str, AIOpponent] = {}
+
+    for i in range(5):
+        name = f"AI_{i+1}"
+        label = _rng.choice(labels)
+        ai_opponents[name] = AIOpponent(get_preset(label))
+        players.append(Player(name=name, stack=1000))
+        prior_key = STYLE_ALIASES.get(label, "未知")
+        display_message(f"  {name}: {label} (先验={prior_key})", style="dim")
+
+    gs = GameState(players=players, small_blind=5, big_blind=10, game_mode=GameMode.SIM)
+    gs.assign_positions()
+    return gs, hero_name, ai_opponents
+
+
+def setup_sim_session() -> tuple[GameState, str, dict[str, "AIOpponent"]]:
+    """交互式设置模拟对战。"""
+    from testing.simulation.label_presets import get_preset
+    from testing.simulation.ai_opponent import AIOpponent
+
+    console.print("\n[bold yellow]═══ AI对战模式 ═══[/bold yellow]\n")
+
+    num_opp = IntPrompt.ask("AI对手数量", default=5, choices=[str(i) for i in range(1, 9)])
+    stack = IntPrompt.ask("初始筹码", default=1000)
+    bb = IntPrompt.ask("大盲注", default=10)
+    sb = bb // 2
+
+    hero_name = Prompt.ask("你的名称", default="Hero")
+    players = [Player(name=hero_name, stack=stack)]
+    ai_opponents: dict[str, AIOpponent] = {}
+
+    for i in range(num_opp):
+        name = f"AI_{i+1}"
+        label = _pick_style_interactive(name)
+        config = get_preset(label)
+        ai_opponents[name] = AIOpponent(config)
+        players.append(Player(name=name, stack=stack))
+        prior_key = STYLE_ALIASES.get(label, "未知")
+        console.print(f"    → {name}: {label} (先验={prior_key})", style="dim")
+
+    gs = GameState(players=players, small_blind=sb, big_blind=bb, game_mode=GameMode.SIM)
+    gs.assign_positions()
+    return gs, hero_name, ai_opponents
+
+
+def sim_deal_hole_cards(gs: GameState, hero_name: str) -> None:
+    """Sim模式发牌：hero手动输入或随机，AI自动随机。
+
+    AI底牌不加入gs.used_cards，避免advisor的equity计算排除这些牌（信息泄露）。
+    用gs._sim_all_dealt追踪所有已发牌防重复。
+    """
+    gs._sim_all_dealt = set(gs.used_cards)
+    for p in gs.players:
+        if p.name == hero_name:
+            p.hole_cards = read_player_cards(gs, "__hero__")
+            display_hero_cards(p.hole_cards)
+            gs._sim_all_dealt.update(p.hole_cards)
+        else:
+            p.hole_cards = random_cards(2, gs._sim_all_dealt)
+            gs._sim_all_dealt.update(p.hole_cards)
+
+
+def sim_play_street(
+    gs: GameState, hero_name: str, advisor: Advisor | None,
+    ai_opponents: dict[str, "AIOpponent"],
+    hand_rec: HandRecorder | None = None,
+) -> bool:
+    """Sim模式下的一条街：AI自动行动，hero手动。"""
+    action_order = gs.get_action_order()
+    if len(action_order) <= 1 and gs.street != Street.PREFLOP:
+        return len(gs.players_in_hand) > 1
+
+    while not gs.is_street_over():
+        for player in gs.get_action_order():
+            if player.has_acted:
+                continue
+            if not player.is_active or player.is_all_in:
+                continue
+
+            advice = None
+            if player.name == hero_name:
+                if advisor and player.hole_cards:
+                    try:
+                        advice = advisor.get_advice(gs, player)
+                        console.print(f"\n[bold cyan]{'─' * 40}[/bold cyan]")
+                        console.print(f"[bold cyan]{advice['text']}[/bold cyan]")
+                        console.print(f"[bold cyan]{'─' * 40}[/bold cyan]")
+                    except Exception:
+                        pass
+                action = read_player_action(player, gs, advice)
+            elif player.name in ai_opponents:
+                ai = ai_opponents[player.name]
+                action_type, amount = ai.decide(gs, player)
+                action = PlayerAction(
+                    player_name=player.name,
+                    action_type=action_type,
+                    amount=amount,
+                )
+            else:
+                action = PlayerAction(player.name, ActionType.FOLD)
+
+            gs.apply_action(action)
+            display_message(f"  {action}", style="dim")
+
+            if hand_rec:
+                hand_rec.record_action(
+                    gs.street, player.name, action,
+                    advisor_text=advice["text"] if advice else None,
+                    advisor_data=advice if advice else None,
+                )
+
+            if gs.is_hand_over():
+                return False
+            if gs.is_street_over():
+                break
+
+    return len(gs.players_in_hand) > 1
+
+
+def sim_handle_allin_runout(gs: GameState, hero_name: str) -> dict[str, int]:
+    """Sim模式的allin runout，用_sim_all_dealt防牌冲突。"""
+    remaining = _remaining_board_count(gs)
+    if remaining <= 0:
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+        return winnings
+
+    dealt_set = getattr(gs, "_sim_all_dealt", gs.used_cards)
+    board_cards = random_cards(remaining, dealt_set)
+    dealt_set.update(board_cards)
+    gs.used_cards.update(board_cards)
+
+    dealt = len(gs.board)
+    if dealt < 3:
+        gs.advance_street()
+        take = 3 - dealt
+        gs.board.extend(board_cards[:take])
+        board_cards = board_cards[take:]
+        dealt = 3
+    if dealt < 4 and board_cards:
+        gs.advance_street()
+        gs.board.append(board_cards[0])
+        board_cards = board_cards[1:]
+        dealt = 4
+    if dealt < 5 and board_cards:
+        gs.advance_street()
+        gs.board.append(board_cards[0])
+
+    display_table(gs, hero_name)
+    display_showdown(gs)
+    winnings = gs.settle()
+    display_settlement(winnings)
+    return winnings
+
+
+def sim_play_hand(
+    gs: GameState, hero_name: str, advisor: Advisor | None,
+    ai_opponents: dict[str, "AIOpponent"],
+    session_rec: SessionRecorder | None = None,
+) -> None:
+    """Sim模式的一手牌完整流程。"""
+    hand_rec = HandRecorder()
+    display_table(gs, hero_name)
+    sim_deal_hole_cards(gs, hero_name)
+
+    if not sim_play_street(gs, hero_name, advisor, ai_opponents, hand_rec):
+        display_table(gs, hero_name)
+        if _is_allin_runout_needed(gs):
+            winnings = sim_handle_allin_runout(gs, hero_name)
+        else:
+            display_showdown(gs)
+            winnings = gs.settle()
+            display_settlement(winnings)
+        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+        return
+
+    display_table(gs, hero_name)
+
+    streets = [Street.FLOP, Street.TURN, Street.RIVER]
+    for street in streets:
+        gs.advance_street()
+        count = STREET_CARD_COUNT[street]
+        board_cards = random_cards(count, gs._sim_all_dealt)
+        gs._sim_all_dealt.update(board_cards)
+        gs.used_cards.update(board_cards)
+        gs.board.extend(board_cards)
+        hand_rec.record_board(street.name, gs.board[:])
+        board_str = " ".join(card_to_short(c) for c in board_cards)
+        display_message(f"  {street.name}: {board_str}", style="bold")
+        display_table(gs, hero_name)
+
+        if not sim_play_street(gs, hero_name, advisor, ai_opponents, hand_rec):
+            display_table(gs, hero_name)
+            if _is_allin_runout_needed(gs):
+                winnings = sim_handle_allin_runout(gs, hero_name)
+                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+                return
+            break
+
+        display_table(gs, hero_name)
+
+        if gs.is_hand_over():
+            break
+
+    if _is_allin_runout_needed(gs):
+        winnings = sim_handle_allin_runout(gs, hero_name)
+    else:
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+
+
+def run_sim_mode(skip_setup: bool = False) -> None:
+    """AI对战模式主循环。"""
+    if skip_setup:
+        gs, hero_name, ai_opponents = quick_sim_session()
+    else:
+        gs, hero_name, ai_opponents = setup_sim_session()
+
+    advisor = Advisor()
+    profiles = {}
+    for p in gs.players:
+        if p.name != hero_name:
+            ai = ai_opponents.get(p.name)
+            prior_key = STYLE_ALIASES.get(ai.config.label, "未知") if ai else "未知"
+            profiles[p.name] = create_profile(p.name, prior_key)
+    advisor.set_profiles(profiles)
+
+    display_message(f"\n对战开始! (AI对战模式 + AI顾问) 按 Ctrl+C 随时退出\n", style="bold green")
+
+    gs.hand_number = 1
+    gs.post_blinds()
+
+    session_rec = SessionRecorder(
+        num_players=len(gs.players),
+        small_blind=gs.small_blind,
+        big_blind=gs.big_blind,
+        player_names=[p.name for p in gs.players],
+    )
+
+    try:
+        while True:
+            if len(gs.players) < 2:
+                display_message("玩家不足，游戏结束", style="bold red")
+                break
+
+            sim_play_hand(gs, hero_name, advisor, ai_opponents, session_rec)
+
+            for p in list(gs.players):
+                if p.stack <= 0 and p.name != hero_name:
+                    gs.players.remove(p)
+                    ai_opponents.pop(p.name, None)
+                    display_message(f"{p.name} 筹码归零，离场", style="dim")
+            if hero_name in [p.name for p in gs.players if p.stack <= 0]:
+                handle_rebuys(gs, hero_name)
+
+            if len(gs.players) < 2:
+                display_message("玩家不足，游戏结束", style="bold red")
+                break
+
+            cont = input("\n按 Enter 继续下一手, Q 退出: ").strip().upper()
+            if cont == "Q":
+                break
+
+            gs.new_hand()
+
+    except KeyboardInterrupt:
+        display_message("\n\n游戏结束!", style="bold yellow")
+
+    display_message("\n最终筹码:", style="bold")
+    for p in gs.players:
+        display_message(f"  {p.name}: {p.stack}")
+
+    _generate_end_charts(session_rec)
+
+
+def sim_auto_deal_hole_cards(gs: GameState) -> None:
+    gs._sim_all_dealt = set(gs.used_cards)
+    for p in gs.players:
+        p.hole_cards = random_cards(2, gs._sim_all_dealt)
+        gs._sim_all_dealt.update(p.hole_cards)
+
+
+def sim_auto_play_street(
+    gs: GameState, hero_name: str, advisor: Advisor | None,
+    ai_opponents: dict[str, "AIOpponent"],
+    hand_rec: HandRecorder | None = None,
+) -> bool:
+    action_order = gs.get_action_order()
+    if len(action_order) <= 1 and gs.street != Street.PREFLOP:
+        return len(gs.players_in_hand) > 1
+
+    while not gs.is_street_over():
+        for player in gs.get_action_order():
+            if player.has_acted:
+                continue
+            if not player.is_active or player.is_all_in:
+                continue
+
+            advice = None
+            if player.name == hero_name:
+                if advisor and player.hole_cards:
+                    try:
+                        advice = advisor.get_advice(gs, player)
+                    except Exception:
+                        pass
+                if advice:
+                    action = _advice_to_action(player, gs, advice)
+                else:
+                    action = PlayerAction(player.name, ActionType.CHECK
+                                          if gs.current_bet == player.current_bet
+                                          else ActionType.CALL,
+                                          amount=gs.current_bet)
+            elif player.name in ai_opponents:
+                ai = ai_opponents[player.name]
+                action_type, amount = ai.decide(gs, player)
+                action = PlayerAction(
+                    player_name=player.name,
+                    action_type=action_type,
+                    amount=amount,
+                )
+            else:
+                action = PlayerAction(player.name, ActionType.FOLD)
+
+            gs.apply_action(action)
+            display_message(f"  {action}", style="dim")
+
+            if hand_rec:
+                hand_rec.record_action(
+                    gs.street, player.name, action,
+                    advisor_text=advice["text"] if advice else None,
+                    advisor_data=advice if advice else None,
+                )
+
+            if gs.is_hand_over():
+                return False
+            if gs.is_street_over():
+                break
+
+    return len(gs.players_in_hand) > 1
+
+
+def sim_auto_play_hand(
+    gs: GameState, hero_name: str, advisor: Advisor | None,
+    ai_opponents: dict[str, "AIOpponent"],
+    session_rec: SessionRecorder | None = None,
+) -> None:
+    hand_rec = HandRecorder()
+    display_table(gs, hero_name)
+    sim_auto_deal_hole_cards(gs)
+    display_hero_cards(next(p for p in gs.players if p.name == hero_name).hole_cards)
+
+    if not sim_auto_play_street(gs, hero_name, advisor, ai_opponents, hand_rec):
+        display_table(gs, hero_name)
+        if _is_allin_runout_needed(gs):
+            winnings = sim_handle_allin_runout(gs, hero_name)
+        else:
+            display_showdown(gs)
+            winnings = gs.settle()
+            display_settlement(winnings)
+        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+        return
+
+    display_table(gs, hero_name)
+
+    streets = [Street.FLOP, Street.TURN, Street.RIVER]
+    for street in streets:
+        gs.advance_street()
+        count = STREET_CARD_COUNT[street]
+        board_cards = random_cards(count, gs._sim_all_dealt)
+        gs._sim_all_dealt.update(board_cards)
+        gs.used_cards.update(board_cards)
+        gs.board.extend(board_cards)
+        hand_rec.record_board(street.name, gs.board[:])
+        board_str = " ".join(card_to_short(c) for c in board_cards)
+        display_message(f"  {street.name}: {board_str}", style="bold")
+        display_table(gs, hero_name)
+
+        if not sim_auto_play_street(gs, hero_name, advisor, ai_opponents, hand_rec):
+            display_table(gs, hero_name)
+            if _is_allin_runout_needed(gs):
+                winnings = sim_handle_allin_runout(gs, hero_name)
+                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+                return
+            break
+
+        display_table(gs, hero_name)
+
+        if gs.is_hand_over():
+            break
+
+    if _is_allin_runout_needed(gs):
+        winnings = sim_handle_allin_runout(gs, hero_name)
+    else:
+        display_showdown(gs)
+        winnings = gs.settle()
+        display_settlement(winnings)
+    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+
+
+def run_sim_auto_mode(max_hands: int = 50) -> None:
+    gs, hero_name, ai_opponents = quick_sim_session()
+
+    advisor = Advisor()
+    profiles = {}
+    for p in gs.players:
+        if p.name != hero_name:
+            ai = ai_opponents.get(p.name)
+            prior_key = STYLE_ALIASES.get(ai.config.label, "未知") if ai else "未知"
+            profiles[p.name] = create_profile(p.name, prior_key)
+    advisor.set_profiles(profiles)
+
+    display_message(
+        f"\n全自动模拟开始! 共 {max_hands} 手 按 Ctrl+C 提前终止\n",
+        style="bold green",
+    )
+
+    gs.hand_number = 1
+    gs.post_blinds()
+
+    session_rec = SessionRecorder(
+        num_players=len(gs.players),
+        small_blind=gs.small_blind,
+        big_blind=gs.big_blind,
+        player_names=[p.name for p in gs.players],
+    )
+
+    try:
+        for hand_idx in range(max_hands):
+            if len(gs.players) < 2:
+                display_message("玩家不足，游戏结束", style="bold red")
+                break
+
+            display_message(
+                f"\n{'═' * 20} 第 {hand_idx + 1}/{max_hands} 手 {'═' * 20}",
+                style="bold yellow",
+            )
+
+            sim_auto_play_hand(gs, hero_name, advisor, ai_opponents, session_rec)
+
+            for p in list(gs.players):
+                if p.stack <= 0 and p.name != hero_name:
+                    gs.players.remove(p)
+                    ai_opponents.pop(p.name, None)
+                    display_message(f"{p.name} 筹码归零，离场", style="dim")
+
+            if hero_name in [p.name for p in gs.players if p.stack <= 0]:
+                display_message("Hero 筹码归零，模拟结束", style="bold red")
+                break
+
+            if len(gs.players) < 2:
+                display_message("玩家不足，游戏结束", style="bold red")
+                break
+
+            gs.new_hand()
+
+    except KeyboardInterrupt:
+        display_message("\n\n模拟提前终止!", style="bold yellow")
+
+    display_message(f"\n模拟完成 (共 {gs.hand_number} 手)", style="bold")
+    display_message("最终筹码:", style="bold")
+    for p in gs.players:
+        display_message(f"  {p.name}: {p.stack}")
+
+    _generate_end_charts(session_rec)
+
+
+def _generate_end_charts(session_rec: SessionRecorder | None) -> None:
+    if not session_rec:
+        return
+    try:
+        charts = generate_session_charts(session_rec.session_dir)
+        if charts:
+            display_message("\n学习曲线已生成:", style="bold cyan")
+            for c in charts:
+                display_message(f"  {c}", style="dim")
+    except Exception as e:
+        display_message(f"生成图表失败: {e}", style="dim red")
+
+
 @click.command()
 @click.option("--skip-setup", is_flag=True, help="跳过设置，使用默认6人桌")
 @click.option("--test", is_flag=True, help="测试模式：所有玩家手牌可见")
 @click.option("--no-advisor", is_flag=True, help="禁用AI顾问")
-def main(skip_setup: bool, test: bool, no_advisor: bool) -> None:
+@click.option("--sim", is_flag=True, help="AI对战模式：与AI对手对战")
+@click.option("--sim-auto", is_flag=True, help="全自动模拟：无需任何输入，批量生成数据")
+@click.option("--max-hands", type=int, default=50, help="全自动模式最大手数 (默认50)")
+def main(skip_setup: bool, test: bool, no_advisor: bool, sim: bool,
+         sim_auto: bool, max_hands: int) -> None:
+    if sim_auto:
+        run_sim_auto_mode(max_hands)
+        return
+    if sim:
+        run_sim_mode(skip_setup)
+        return
+
     mode = GameMode.TEST if test else GameMode.LIVE
     if skip_setup:
         players = [Player(name=n, stack=1000) for n in ["hero", "P2", "P3", "P4", "P5", "P6"]]
@@ -804,7 +1426,12 @@ def main(skip_setup: bool, test: bool, no_advisor: bool) -> None:
         profiles = {}
         for p in gs.players:
             if p.name != hero_name:
-                profiles[p.name] = load_or_create(p.name)
+                existing = load_or_create(p.name)
+                if existing.total_hands == 0 and existing.prior_type == "未知":
+                    prior = _ask_prior_type(p.name)
+                    if prior != "未知":
+                        existing = create_profile(p.name, prior)
+                profiles[p.name] = existing
         advisor.set_profiles(profiles)
 
     mode_label = "测试模式" if mode == GameMode.TEST else "实战模式"
@@ -814,13 +1441,20 @@ def main(skip_setup: bool, test: bool, no_advisor: bool) -> None:
     gs.hand_number = 1
     gs.post_blinds()
 
+    session_rec = SessionRecorder(
+        num_players=len(gs.players),
+        small_blind=gs.small_blind,
+        big_blind=gs.big_blind,
+        player_names=[p.name for p in gs.players],
+    )
+
     try:
         while True:
             if len(gs.players) < 2:
                 display_message("玩家不足，游戏结束", style="bold red")
                 break
 
-            play_hand(gs, hero_name, advisor)
+            play_hand(gs, hero_name, advisor, session_rec)
             handle_rebuys(gs, hero_name)
 
             if len(gs.players) < 2:
@@ -839,6 +1473,8 @@ def main(skip_setup: bool, test: bool, no_advisor: bool) -> None:
     display_message("\n最终筹码:", style="bold")
     for p in gs.players:
         display_message(f"  {p.name}: {p.stack}")
+
+    _generate_end_charts(session_rec)
 
 
 if __name__ == "__main__":

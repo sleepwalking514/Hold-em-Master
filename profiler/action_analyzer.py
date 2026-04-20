@@ -101,7 +101,7 @@ def _judge_single_action(
     spr: float,
     prior_actions_on_street: list[PlayerAction],
 ) -> ActionJudgment:
-    advice = get_postflop_advice(hand_strength, is_ip, facing_bet, spr)
+    advice = get_postflop_advice(hand_strength, is_ip, facing_bet, spr, mix=False)
     optimal = advice["action"]
     actual = _action_to_category(action, pot_size)
 
@@ -123,8 +123,10 @@ def _judge_single_action(
         detail = f"持有{hand_strength.name}却弃牌"
 
     # Monster/strong hand but only check through all streets (missed value)
+    # Exception: OOP monster check can be a valid slow-play/trap
     elif (actual == PostflopAction.CHECK
           and hand_strength.value >= HandStrength.STRONG_MADE.value
+          and not (hand_strength == HandStrength.MONSTER and not is_ip)
           and optimal in (PostflopAction.BET_MEDIUM, PostflopAction.BET_LARGE)):
         mistake = MistakeType.MISSED_VALUE
         severity = -0.4

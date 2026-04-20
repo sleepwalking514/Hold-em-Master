@@ -12,7 +12,7 @@ HAND_TIERS = {
     6: ["33", "22", "A4s", "A3s", "A2s", "A9o", "K9s", "K8s", "Q9s", "QTo", "T9s", "T8s", "98s"],
     7: ["A8o", "A7o", "A6o", "A5o", "K7s", "K6s", "K5s", "K9o", "Q8s", "J8s", "J9o", "T9o", "97s", "87s", "86s", "76s"],
     8: ["A4o", "A3o", "A2o", "K4s", "K3s", "K2s", "K8o", "Q7s", "Q6s", "Q5s", "Q9o", "J7s", "T7s", "96s", "85s", "75s", "65s", "54s"],
-    9: ["K7o", "K6o", "Q8o", "Q4s", "Q3s", "Q2s", "J6s", "J5s", "J8o", "T6s", "T8o", "98o", "87o", "95s", "84s", "74s", "64s", "53s", "43s"],
+    9: ["K7o", "K6o", "K5o", "Q8o", "Q7o", "Q6o", "Q5o", "Q4s", "Q3s", "Q2s", "J6s", "J5s", "J8o", "J7o", "T6s", "T8o", "T7o", "98o", "87o", "95s", "84s", "74s", "64s", "53s", "43s"],
 }
 
 
@@ -35,10 +35,10 @@ def _normalize_hand(rank1: str, rank2: str, suited: bool) -> str:
 
 
 POSITION_OPEN_TIERS = {
-    "UTG":   4, "UTG+1": 4, "UTG+2": 5,
-    "MP":    5, "MP+1":  6,
-    "CO":    7, "BTN":   8,
-    "SB":    7, "BB":    0,
+    "UTG":   5, "UTG+1": 5, "UTG+2": 6,
+    "MP":    6, "MP+1":  7,
+    "CO":    8, "BTN":   9,
+    "SB":    8, "BB":    0,
 }
 
 STACK_DEPTH_ADJUSTMENTS = {
@@ -73,17 +73,17 @@ PUSH_FOLD_RANGES = {
 }
 
 THREE_BET_TIERS = {
-    "UTG": 1, "UTG+1": 1, "UTG+2": 2,
-    "MP": 2, "MP+1": 2,
-    "CO": 3, "BTN": 4,
-    "SB": 4, "BB": 4,
+    "UTG": 2, "UTG+1": 2, "UTG+2": 2,
+    "MP": 3, "MP+1": 3,
+    "CO": 4, "BTN": 5,
+    "SB": 5, "BB": 5,
 }
 
 CALL_OPEN_TIERS = {
-    "UTG": 2, "UTG+1": 3, "UTG+2": 3,
-    "MP": 4, "MP+1": 4,
-    "CO": 5, "BTN": 6,
-    "SB": 5, "BB": 7,
+    "UTG": 3, "UTG+1": 3, "UTG+2": 4,
+    "MP": 5, "MP+1": 5,
+    "CO": 6, "BTN": 7,
+    "SB": 6, "BB": 8,
 }
 
 
@@ -93,6 +93,7 @@ class PreflopAction:
     CALL = "call"
     CHECK = "check"
     THREE_BET = "3bet"
+    FOUR_BET = "4bet"
     PUSH = "push"
 
 
@@ -127,9 +128,18 @@ def get_preflop_advice(
         return PreflopAction.FOLD, 0.9
 
     if facing_3bet:
+        stack_cat = get_stack_category(effective_bb)
+        if stack_cat == "push_fold":
+            if tier <= 2 + (sh_boost // 2):
+                return PreflopAction.PUSH, 0.9
+            return PreflopAction.FOLD, 0.8
         if tier == 1:
-            return PreflopAction.THREE_BET, 0.7
+            if effective_bb <= 40:
+                return PreflopAction.PUSH, 0.85
+            return PreflopAction.FOUR_BET, 0.8
         if tier <= 2 + (sh_boost // 2):
+            if effective_bb <= 40:
+                return PreflopAction.PUSH, 0.75
             return PreflopAction.CALL, 0.8
         return PreflopAction.FOLD, 0.7
 

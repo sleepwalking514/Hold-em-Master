@@ -19,7 +19,7 @@ def select_bet_size(
     base_ratio = plan.current_size
 
     if texture.is_dry:
-        base_ratio = min(base_ratio, 0.33)
+        base_ratio = max(min(base_ratio, 0.40), 0.25)
     elif texture.is_wet:
         base_ratio = max(base_ratio, 0.66)
 
@@ -27,7 +27,7 @@ def select_bet_size(
         base_ratio = max(base_ratio, 0.66)
 
     if not is_value:
-        base_ratio = min(base_ratio, 0.5)
+        base_ratio = max(min(base_ratio, 0.75), 0.5)
 
     spr_val = spr_from_state(game_state, hero.name)
     if spr_val < 2 and strength.value >= HandStrength.STRONG_MADE.value:
@@ -71,5 +71,12 @@ def preflop_open_size(game_state: GameState, hero: Player) -> int:
 def preflop_3bet_size(game_state: GameState, hero: Player, is_ip: bool) -> int:
     facing = game_state.current_bet
     multiplier = 3.0 if is_ip else 3.5
+    amount = int(facing * multiplier)
+    return min(amount, hero.stack + hero.current_bet)
+
+
+def preflop_4bet_size(game_state: GameState, hero: Player, is_ip: bool) -> int:
+    facing = game_state.current_bet
+    multiplier = 2.2 if is_ip else 2.5
     amount = int(facing * multiplier)
     return min(amount, hero.stack + hero.current_bet)

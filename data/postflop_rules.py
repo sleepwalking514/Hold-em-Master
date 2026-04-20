@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from enum import Enum
 
 from treys import Card
@@ -106,7 +107,13 @@ def classify_hand_strength(
 
 
 def _classify_made_hand(rank: int, board_len: int) -> HandStrength:
-    """Classify based on treys rank only (made hand strength)."""
+    """Classify based on treys rank only (made hand strength).
+
+    Treys ranks: 1 (royal flush) → 7462 (worst high card).
+    1-322: straight flush+  |  323-1600: quads/full house
+    1601-3500: flush/straight  |  3501-5000: three-of-a-kind/two pair
+    5001-6185: one pair  |  6186-7462: high card
+    """
     if rank <= 322:
         return HandStrength.MONSTER
     elif rank <= 1600:
@@ -116,7 +123,7 @@ def _classify_made_hand(rank: int, board_len: int) -> HandStrength:
     elif rank <= 5000:
         return HandStrength.WEAK_MADE
     elif rank <= 6185:
-        return HandStrength.WEAK_DRAW
+        return HandStrength.WEAK_MADE
     return HandStrength.TRASH
 
 
@@ -125,36 +132,36 @@ def hand_strength_ratio(rank: int) -> float:
 
 
 IP_STRATEGY = {
-    HandStrength.MONSTER:     {"action": PostflopAction.BET_LARGE, "freq": 0.85, "alt": PostflopAction.RAISE},
+    HandStrength.MONSTER:     {"action": PostflopAction.BET_LARGE, "freq": 0.90, "alt": PostflopAction.RAISE},
     HandStrength.STRONG_MADE: {"action": PostflopAction.BET_MEDIUM, "freq": 0.80, "alt": PostflopAction.BET_LARGE},
-    HandStrength.MEDIUM_MADE: {"action": PostflopAction.BET_SMALL, "freq": 0.55, "alt": PostflopAction.CHECK},
-    HandStrength.WEAK_MADE:   {"action": PostflopAction.CHECK, "freq": 0.65, "alt": PostflopAction.BET_SMALL},
-    HandStrength.STRONG_DRAW: {"action": PostflopAction.BET_MEDIUM, "freq": 0.60, "alt": PostflopAction.CALL},
-    HandStrength.MEDIUM_DRAW: {"action": PostflopAction.CHECK, "freq": 0.55, "alt": PostflopAction.CALL},
+    HandStrength.MEDIUM_MADE: {"action": PostflopAction.BET_SMALL, "freq": 0.65, "alt": PostflopAction.CHECK},
+    HandStrength.WEAK_MADE:   {"action": PostflopAction.BET_SMALL, "freq": 0.45, "alt": PostflopAction.CHECK},
+    HandStrength.STRONG_DRAW: {"action": PostflopAction.BET_MEDIUM, "freq": 0.65, "alt": PostflopAction.CALL},
+    HandStrength.MEDIUM_DRAW: {"action": PostflopAction.BET_SMALL, "freq": 0.40, "alt": PostflopAction.CHECK},
+    HandStrength.WEAK_DRAW:   {"action": PostflopAction.CHECK, "freq": 0.60, "alt": PostflopAction.BET_SMALL},
+    HandStrength.TRASH:       {"action": PostflopAction.CHECK, "freq": 0.50, "alt": PostflopAction.BET_MEDIUM},
+}
+
+OOP_STRATEGY = {
+    HandStrength.MONSTER:     {"action": PostflopAction.BET_LARGE, "freq": 0.70, "alt": PostflopAction.CHECK},
+    HandStrength.STRONG_MADE: {"action": PostflopAction.BET_MEDIUM, "freq": 0.70, "alt": PostflopAction.CHECK},
+    HandStrength.MEDIUM_MADE: {"action": PostflopAction.BET_SMALL, "freq": 0.50, "alt": PostflopAction.CHECK},
+    HandStrength.WEAK_MADE:   {"action": PostflopAction.CHECK, "freq": 0.60, "alt": PostflopAction.BET_SMALL},
+    HandStrength.STRONG_DRAW: {"action": PostflopAction.BET_MEDIUM, "freq": 0.50, "alt": PostflopAction.CHECK},
+    HandStrength.MEDIUM_DRAW: {"action": PostflopAction.CHECK, "freq": 0.55, "alt": PostflopAction.BET_SMALL},
     HandStrength.WEAK_DRAW:   {"action": PostflopAction.CHECK, "freq": 0.70, "alt": PostflopAction.FOLD},
     HandStrength.TRASH:       {"action": PostflopAction.CHECK, "freq": 0.60, "alt": PostflopAction.BET_MEDIUM},
 }
 
-OOP_STRATEGY = {
-    HandStrength.MONSTER:     {"action": PostflopAction.CHECK, "freq": 0.45, "alt": PostflopAction.BET_LARGE},
-    HandStrength.STRONG_MADE: {"action": PostflopAction.BET_MEDIUM, "freq": 0.65, "alt": PostflopAction.CHECK},
-    HandStrength.MEDIUM_MADE: {"action": PostflopAction.CHECK, "freq": 0.70, "alt": PostflopAction.BET_SMALL},
-    HandStrength.WEAK_MADE:   {"action": PostflopAction.CHECK, "freq": 0.80, "alt": PostflopAction.FOLD},
-    HandStrength.STRONG_DRAW: {"action": PostflopAction.CHECK, "freq": 0.55, "alt": PostflopAction.BET_MEDIUM},
-    HandStrength.MEDIUM_DRAW: {"action": PostflopAction.CHECK, "freq": 0.70, "alt": PostflopAction.FOLD},
-    HandStrength.WEAK_DRAW:   {"action": PostflopAction.CHECK, "freq": 0.80, "alt": PostflopAction.FOLD},
-    HandStrength.TRASH:       {"action": PostflopAction.CHECK, "freq": 0.75, "alt": PostflopAction.BET_MEDIUM},
-}
-
 FACING_BET_STRATEGY = {
-    HandStrength.MONSTER:     {"action": PostflopAction.RAISE, "freq": 0.70, "alt": PostflopAction.CALL},
-    HandStrength.STRONG_MADE: {"action": PostflopAction.CALL, "freq": 0.80, "alt": PostflopAction.RAISE},
-    HandStrength.MEDIUM_MADE: {"action": PostflopAction.CALL, "freq": 0.60, "alt": PostflopAction.FOLD},
-    HandStrength.WEAK_MADE:   {"action": PostflopAction.CALL, "freq": 0.40, "alt": PostflopAction.FOLD},
-    HandStrength.STRONG_DRAW: {"action": PostflopAction.CALL, "freq": 0.75, "alt": PostflopAction.RAISE},
+    HandStrength.MONSTER:     {"action": PostflopAction.RAISE, "freq": 0.75, "alt": PostflopAction.CALL},
+    HandStrength.STRONG_MADE: {"action": PostflopAction.RAISE, "freq": 0.45, "alt": PostflopAction.CALL},
+    HandStrength.MEDIUM_MADE: {"action": PostflopAction.CALL, "freq": 0.65, "alt": PostflopAction.RAISE},
+    HandStrength.WEAK_MADE:   {"action": PostflopAction.CALL, "freq": 0.45, "alt": PostflopAction.FOLD},
+    HandStrength.STRONG_DRAW: {"action": PostflopAction.CALL, "freq": 0.70, "alt": PostflopAction.RAISE},
     HandStrength.MEDIUM_DRAW: {"action": PostflopAction.CALL, "freq": 0.50, "alt": PostflopAction.FOLD},
-    HandStrength.WEAK_DRAW:   {"action": PostflopAction.FOLD, "freq": 0.70, "alt": PostflopAction.CALL},
-    HandStrength.TRASH:       {"action": PostflopAction.FOLD, "freq": 0.85, "alt": PostflopAction.CALL},
+    HandStrength.WEAK_DRAW:   {"action": PostflopAction.FOLD, "freq": 0.65, "alt": PostflopAction.CALL},
+    HandStrength.TRASH:       {"action": PostflopAction.FOLD, "freq": 0.80, "alt": PostflopAction.CALL},
 }
 
 
@@ -179,6 +186,7 @@ def get_postflop_advice(
     facing_bet: bool,
     spr_value: float = 6.0,
     is_wet_board: bool = False,
+    mix: bool = True,
 ) -> dict:
     if facing_bet:
         strategy = FACING_BET_STRATEGY[strength]
@@ -196,5 +204,8 @@ def get_postflop_advice(
 
     if is_wet_board and strength in (HandStrength.STRONG_MADE, HandStrength.MONSTER):
         result["freq"] = min(result["freq"] + 0.1, 0.95)
+
+    if mix and random.random() > result["freq"]:
+        result["action"] = result["alt"]
 
     return result

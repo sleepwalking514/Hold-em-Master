@@ -8,7 +8,6 @@ from profiler.player_profile import PlayerProfile, DEFAULT_PRIORS
 from profiler.bayesian_tracker import BayesianStat
 
 PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
-PRIORS_DIR = PROFILES_DIR / "priors"
 
 PRIOR_TEMPLATES: dict[str, dict[str, tuple[float, float]]] = {
     "极紧Nit": {

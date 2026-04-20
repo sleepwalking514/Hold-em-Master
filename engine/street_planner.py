@@ -66,7 +66,7 @@ def get_street_plan(
     plan = plan_bet_geometry(current_spr, streets_remaining)
 
     if strength.value <= HandStrength.WEAK_MADE.value:
-        plan.sizes = [min(s * 0.5, 0.33) for s in plan.sizes]
+        plan.sizes = [min(s * 0.7, 0.5) for s in plan.sizes]
         plan.allow_overbet = False
 
     return plan
