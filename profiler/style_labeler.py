@@ -39,7 +39,7 @@ def classify_style(profile: PlayerProfile, num_players: int = 6) -> StyleLabel:
     aggr_conf = profile.get_confidence("aggression_freq")
     avg_conf = (vpip_conf + aggr_conf) / 2
 
-    if avg_conf < 0.30:
+    if avg_conf < 0.40:
         return StyleLabel("未知", "", avg_conf, "样本不足，无法判断风格")
 
     # HU/short-handed: shift thresholds up since everyone plays wider

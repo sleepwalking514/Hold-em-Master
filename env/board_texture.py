@@ -28,6 +28,7 @@ class BoardTexture:
     high_card_rank: int = 0
     connectedness: int = 0
     wetness: float = 0.0
+    board_danger: int = 0
     scare_cards: list[int] | None = None
 
     @property
@@ -92,6 +93,14 @@ def analyze_board(board: list[int]) -> BoardTexture:
     if tex.is_paired:
         wetness -= 0.1
     tex.wetness = max(0.0, min(1.0, wetness))
+
+    broadway_count = sum(1 for r in ranks if r >= 8)
+    danger = broadway_count
+    if tex.connectedness >= 3:
+        danger += 1
+    if tex.is_monotone:
+        danger += 1
+    tex.board_danger = danger
 
     if len(board) >= 4:
         latest = board[-1]

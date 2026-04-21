@@ -33,7 +33,9 @@ def select_bet_size(
     if spr_val < 2 and strength.value >= HandStrength.STRONG_MADE.value:
         return hero.stack
 
-    amount = max(int(pot * base_ratio), game_state.big_blind)
+    amount = int(pot * base_ratio)
+    min_bet = max(game_state.big_blind, int(pot * 0.25)) if pot > 0 else game_state.big_blind
+    amount = max(amount, min_bet)
     return min(amount, hero.stack)
 
 

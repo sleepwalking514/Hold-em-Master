@@ -15,23 +15,23 @@ STAT_NAMES = [
 ]
 
 DEFAULT_PRIORS = {
-    "vpip": (2, 4),
-    "pfr": (1, 4),
-    "three_bet_pct": (1, 6),
-    "aggression_freq": (2, 3),
-    "wtsd": (1, 3),
-    "wsd": (2, 2),
-    "cbet_flop": (2, 2),
-    "cbet_turn": (1, 3),
-    "fold_to_cbet": (2, 2),
-    "fold_to_3bet": (2, 2),
-    "bet_fold_freq": (1, 3),
-    "fold_to_river_bet": (2, 2),
-    "squeeze": (1, 6),
-    "steal": (1, 3),
-    "bb_fold_to_steal": (2, 2),
-    "bb_3bet_vs_steal": (1, 4),
-    "sb_fold_to_steal": (2, 2),
+    "vpip": (1, 2),
+    "pfr": (0.5, 2),
+    "three_bet_pct": (0.5, 3),
+    "aggression_freq": (1, 1.5),
+    "wtsd": (0.5, 1.5),
+    "wsd": (1, 1),
+    "cbet_flop": (1, 1),
+    "cbet_turn": (0.5, 1.5),
+    "fold_to_cbet": (1, 1),
+    "fold_to_3bet": (1, 1),
+    "bet_fold_freq": (0.5, 1.5),
+    "fold_to_river_bet": (1, 1),
+    "squeeze": (0.5, 3),
+    "steal": (0.5, 1.5),
+    "bb_fold_to_steal": (1, 1),
+    "bb_3bet_vs_steal": (0.5, 2),
+    "sb_fold_to_steal": (1, 1),
 }
 
 
@@ -201,7 +201,11 @@ class PlayerProfile:
 
     def get_stat(self, name: str) -> float:
         if name in self.stats:
-            return self.stats[name].mean
+            val = self.stats[name].mean
+            if name == "pfr":
+                vpip = self.stats["vpip"].mean if "vpip" in self.stats else 1.0
+                val = min(val, vpip)
+            return val
         return 0.0
 
     def get_confidence(self, name: str) -> float:
@@ -222,7 +226,7 @@ class PlayerProfile:
     def style_label(self) -> str:
         vpip_conf = self.get_confidence("vpip")
         aggr_conf = self.get_confidence("aggression_freq")
-        if (vpip_conf + aggr_conf) / 2 < 0.30:
+        if (vpip_conf + aggr_conf) / 2 < 0.40:
             return "未知"
         vpip = self.get_stat("vpip")
         aggr = self.get_stat("aggression_freq")

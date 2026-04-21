@@ -39,8 +39,8 @@ def _normalize_hand(rank1: str, rank2: str, suited: bool) -> str:
 POSITION_OPEN_TIERS = {
     "UTG":   5, "UTG+1": 5, "UTG+2": 6,
     "MP":    6, "MP+1":  7,
-    "CO":    8, "BTN":   8,
-    "SB":    7, "BB":    0,
+    "CO":    7, "BTN":   7,
+    "SB":    6, "BB":    0,
 }
 
 STACK_DEPTH_ADJUSTMENTS = {
@@ -85,7 +85,7 @@ CALL_OPEN_TIERS = {
     "UTG": 3, "UTG+1": 3, "UTG+2": 4,
     "MP": 5, "MP+1": 5,
     "CO": 6, "BTN": 7,
-    "SB": 6, "BB": 8,
+    "SB": 6, "BB": 9,
 }
 
 
@@ -106,8 +106,6 @@ def _short_handed_boost(num_players: int) -> int:
     elif num_players <= 3:
         return 2
     elif num_players <= 4:
-        return 2
-    elif num_players <= 6:
         return 1
     return 0
 
@@ -160,10 +158,16 @@ def get_preflop_advice(
     open_tier = POSITION_OPEN_TIERS.get(position, 5) + sh_boost
     adj = STACK_DEPTH_ADJUSTMENTS.get(stack_cat, {})
     tier_shift = adj.get("tier_shift", 0)
-    adjusted_open = min(open_tier + tier_shift, adj.get("max_tier", 9))
+    max_tier = adj.get("max_tier", 9)
+    if num_players <= 2:
+        max_tier = 11
+    adjusted_open = min(open_tier + tier_shift, max_tier)
 
     if position == "BB" and not facing_raise:
-        if tier <= 3 + (sh_boost // 2):
+        raise_tier = 3 + (sh_boost // 2)
+        if num_players <= 2:
+            raise_tier = 7
+        if tier <= raise_tier:
             return PreflopAction.OPEN, 0.75
         return PreflopAction.CHECK, 0.8
 
