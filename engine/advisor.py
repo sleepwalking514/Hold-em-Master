@@ -11,7 +11,7 @@ from engine.bet_sizing import (
 )
 from engine.street_planner import get_street_plan
 from engine.reasoning import format_advice, build_reasons, ACTION_NAMES
-from engine.exploit_rules import ExploitEngine, ExploitAdjustment
+from engine.exploit_rules import ExploitEngine, ExploitAdjustment, ExploitCategory
 from engine.multiway_strategy import analyze_multiway, should_bluff_multiway
 from engine.range_equity import equity_vs_range, multiway_equity
 from data.postflop_rules import HandStrength, classify_hand_strength
@@ -19,7 +19,7 @@ from data.preflop_ranges import PreflopAction
 from data.exploit_config import continuous_exploit, blend_weight, BASELINE
 from profiler.player_profile import PlayerProfile
 from profiler.hand_range_estimator import HandRangeEstimator, HandRangeMatrix
-from profiler.style_labeler import classify_style
+from profiler.style_labeler import classify_style, get_exploit_priority
 from profiler.anti_misjudgment import AntiMisjudgment
 
 
@@ -61,6 +61,25 @@ class Advisor:
         elif range_equity_val is not None:
             effective_equity = range_equity_val
 
+        if effective_equity is not None:
+            opponents_list = [p for p in game_state.players_in_hand if p.name != hero.name]
+            min_hands = min(
+                (self.profiles[o.name].total_hands if o.name in self.profiles else 0)
+                for o in opponents_list
+            ) if opponents_list else 999
+            if min_hands < 20:
+                effective_equity = self._cold_start_discount(game_state, hero, effective_equity)
+
+        if effective_equity is not None and game_state.street != Street.PREFLOP:
+            effective_equity = self._action_sequence_discount(
+                game_state, hero, effective_equity,
+            )
+
+        if effective_equity is not None and game_state.street == Street.PREFLOP:
+            effective_equity = self._adjust_equity_vs_tight_allin(
+                game_state, hero, effective_equity,
+            )
+
         action = baseline["action"]
         confidence = baseline["confidence"]
         amount = 0
@@ -77,18 +96,18 @@ class Advisor:
         exploit_adjustments = self._get_exploit_adjustments(game_state, hero, hand_strength)
 
         multiway_note = None
-        if num_opponents >= 2 and effective_equity is not None:
+        if effective_equity is not None:
             multiway_note = self._analyze_multiway(game_state, hero, effective_equity)
 
         if game_state.street == Street.PREFLOP:
             action, amount, confidence = self._resolve_preflop(
                 game_state, hero, baseline, effective_equity, pot_odds_val,
-                exploit_adjustments,
+                exploit_adjustments, multiway_note,
             )
         else:
             action, amount, confidence = self._resolve_postflop(
                 game_state, hero, baseline, effective_equity, pot_odds_val,
-                exploit_adjustments,
+                exploit_adjustments, multiway_note,
             )
 
         opp_summary = self._opponent_summary(game_state, hero)
@@ -96,10 +115,17 @@ class Advisor:
             baseline, effective_equity, pot_odds_val, opp_summary, exploit_note,
         )
         if multiway_note:
-            reasons.append(multiway_note)
+            note_suggests_passive = "控池" in multiway_note or "过牌/弃牌" in multiway_note
+            action_is_aggressive = action in (ActionType.CALL, ActionType.RAISE, ActionType.ALL_IN)
+            if not (note_suggests_passive and action_is_aggressive):
+                reasons.append(multiway_note)
 
         if action in (ActionType.BET, ActionType.RAISE) and amount == 0:
             action = ActionType.CHECK
+
+        confidence = self._ev_based_confidence(
+            action, effective_equity, pot_odds_val, confidence,
+        )
 
         advice_text = format_advice(action, amount, confidence, reasons, alternatives)
 
@@ -120,7 +146,7 @@ class Advisor:
         self, gs: GameState, hero: Player,
         hand_strength: HandStrength | None = None,
     ) -> dict:
-        """Compute actionable exploit adjustments using the ExploitEngine."""
+        """Compute actionable exploit adjustments using the ExploitEngine + style labels."""
         adjustments = {
             "widen_value": False,
             "increase_bluff": False,
@@ -128,6 +154,8 @@ class Advisor:
             "decrease_sizing": False,
             "fold_more": False,
             "call_more": False,
+            "no_bluff": False,
+            "style_labels": [],
         }
         opponents = [p for p in gs.players_in_hand if p.name != hero.name]
         if not opponents:
@@ -159,6 +187,21 @@ class Advisor:
                 continue
 
             modifier = self.anti_misjudgment.get_exploit_modifier(opp.name, profile)
+
+            label = classify_style(profile, num_players=len(gs.players))
+            style_priorities = get_exploit_priority(label)
+            adjustments["style_labels"].append(label.primary)
+
+            skill = profile.skill_estimate.overall_skill
+            if skill > 0.7:
+                modifier *= 0.5
+
+            if style_priorities.get("no_bluff", 0) > 0.5:
+                adjustments["no_bluff"] = True
+            if style_priorities.get("value_heavy", 0) > 0.5:
+                adjustments["widen_value"] = True
+                adjustments["increase_sizing"] = True
+
             action_adj = self.exploit_engine.get_action_adjustments(
                 profile, hero_is_ip, hs_value, board_wetness, street_name,
             )
@@ -167,11 +210,15 @@ class Advisor:
                 adjustments["widen_value"] = True
                 adjustments["increase_sizing"] = True
             if action_adj["bluff_freq_adj"] * modifier > 0.05:
-                adjustments["increase_bluff"] = True
+                if not adjustments["no_bluff"]:
+                    adjustments["increase_bluff"] = True
             if action_adj["call_freq_adj"] * modifier > 0.05:
                 if hand_strength is None or hand_strength.value >= HandStrength.WEAK_MADE.value:
                     adjustments["call_more"] = True
             if action_adj["fold_freq_adj"] * modifier > 0.05:
+                adjustments["fold_more"] = True
+
+            if label.primary == "Nit" and label.confidence > 0.3:
                 adjustments["fold_more"] = True
 
         return adjustments
@@ -179,11 +226,13 @@ class Advisor:
     def _resolve_preflop(
         self, gs: GameState, hero: Player, baseline: dict,
         equity: float | None, pot_odds_val: float | None,
-        exploit: dict | None = None,
+        exploit: dict | None = None, multiway_note: str | None = None,
     ) -> tuple[ActionType, int, float]:
         action = baseline["action"]
         confidence = baseline["confidence"]
         preflop_action = baseline.get("preflop_action", "")
+
+        pot_control = multiway_note is not None and "控池" in multiway_note
 
         not_facing_raise = gs.current_bet <= hero.current_bet
 
@@ -197,16 +246,71 @@ class Advisor:
             hand_str = baseline.get("hand", "")
             from data.preflop_ranges import _hand_tier
             tier = _hand_tier(hand_str) if hand_str else 10
-            if tier <= 8 and equity and pot_odds_val and equity > pot_odds_val * 1.2:
-                return ActionType.CALL, gs.current_bet, 0.55
+            eq_mult = 1.4 if pot_control else 1.2
+
+            preflop_raise_count = sum(
+                1 for a in gs.action_history.get(Street.PREFLOP, [])
+                if a.action_type in (ActionType.RAISE, ActionType.ALL_IN)
+                and a.player_name != hero.name
+            )
+
+            # Widen call range vs frequent 3bettors
+            opp_3bet_freq = 0.0
+            if preflop_raise_count >= 1:
+                opponents = [p for p in gs.players_in_hand if p.name != hero.name]
+                for opp in opponents:
+                    if opp.name in self.profiles:
+                        prof = self.profiles[opp.name]
+                        tbt = prof.get_stat("three_bet_pct")
+                        if prof.get_confidence("three_bet_pct") > 0.2:
+                            opp_3bet_freq = max(opp_3bet_freq, tbt)
+            three_bet_widen = 2 if opp_3bet_freq > 0.35 else (1 if opp_3bet_freq > 0.25 else 0)
+
+            if preflop_raise_count >= 2:
+                call_tier = 2 + three_bet_widen
+                if tier <= call_tier and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
+                    return ActionType.CALL, gs.current_bet, 0.55
+            elif preflop_raise_count >= 1:
+                if tier <= 4 and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
+                    return ActionType.CALL, gs.current_bet, 0.55
+            else:
+                if tier <= 8 and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
+                    return ActionType.CALL, gs.current_bet, 0.55
             if tier <= 7 and exploit and exploit.get("call_more") and equity and equity > 0.35:
-                return ActionType.CALL, gs.current_bet, 0.50
+                if preflop_raise_count < 2 and not pot_control:
+                    return ActionType.CALL, gs.current_bet, 0.50
             return ActionType.FOLD, 0, confidence
 
         if action == ActionType.CALL:
             if equity and pot_odds_val and equity < pot_odds_val * 0.8:
                 return ActionType.FOLD, 0, 0.60
-            if exploit and exploit.get("increase_bluff") and equity and equity > 0.40:
+            # Tighten up in multiway 3bet pots
+            preflop_callers = sum(
+                1 for a in gs.action_history.get(Street.PREFLOP, [])
+                if a.action_type == ActionType.CALL and a.player_name != hero.name
+            )
+            preflop_raises = sum(
+                1 for a in gs.action_history.get(Street.PREFLOP, [])
+                if a.action_type in (ActionType.RAISE, ActionType.ALL_IN)
+                and a.player_name != hero.name
+            )
+            if preflop_raises >= 2 and preflop_callers >= 1:
+                hand_str = baseline.get("hand", "")
+                from data.preflop_ranges import _hand_tier
+                t = _hand_tier(hand_str) if hand_str else 10
+                if t > 3:
+                    return ActionType.FOLD, 0, 0.60
+            # Pot commitment: if call commits 90%+ of stack, shove or fold
+            call_amount = gs.current_bet - hero.current_bet
+            if call_amount > 0 and hero.stack > 0:
+                commit_ratio = call_amount / hero.stack
+                if commit_ratio >= 0.9:
+                    pot_odds_for_allin = hero.stack / (gs.pot + hero.stack)
+                    if equity and equity >= pot_odds_for_allin * 0.85:
+                        return ActionType.ALL_IN, hero.stack + hero.current_bet, 0.80
+                    else:
+                        return ActionType.FOLD, 0, 0.65
+            if exploit and exploit.get("increase_bluff") and not exploit.get("no_bluff") and equity and equity > 0.40:
                 from engine.gto_baseline import _hero_position_is_ip
                 is_ip = _hero_position_is_ip(gs, hero.name)
                 amt = preflop_3bet_size(gs, hero, is_ip)
@@ -214,6 +318,17 @@ class Advisor:
             return ActionType.CALL, gs.current_bet, confidence
 
         if action == ActionType.RAISE:
+            opp_raise_count = sum(
+                1 for a in gs.action_history.get(Street.PREFLOP, [])
+                if a.action_type in (ActionType.RAISE, ActionType.ALL_IN)
+                and a.player_name != hero.name
+            )
+            if opp_raise_count >= 2:
+                hand_str = baseline.get("hand", "")
+                from data.preflop_ranges import _hand_tier
+                tier = _hand_tier(hand_str) if hand_str else 10
+                if tier > 2:
+                    return ActionType.FOLD, 0, 0.70
             if preflop_action in (PreflopAction.THREE_BET, PreflopAction.FOUR_BET):
                 from engine.gto_baseline import _hero_position_is_ip
                 is_ip = _hero_position_is_ip(gs, hero.name)
@@ -234,6 +349,50 @@ class Advisor:
         elif street == Street.TURN:
             return 0.40
         return 0.30
+
+    def _ev_based_confidence(
+        self, action: ActionType, equity: float | None,
+        pot_odds_val: float | None, baseline_conf: float,
+    ) -> float:
+        if equity is None:
+            return baseline_conf
+
+        if action == ActionType.FOLD:
+            if pot_odds_val is not None:
+                margin = pot_odds_val - equity
+                if margin > 0.15:
+                    return 0.90
+                elif margin > 0.05:
+                    return 0.70
+                else:
+                    return 0.45
+            if equity < 0.25:
+                return 0.85
+            elif equity < 0.35:
+                return 0.65
+            return 0.45
+
+        if action in (ActionType.CALL, ActionType.CHECK):
+            if pot_odds_val is not None:
+                margin = equity - pot_odds_val
+                if margin > 0.15:
+                    return 0.85
+                elif margin > 0.05:
+                    return 0.65
+                else:
+                    return 0.45
+            return baseline_conf
+
+        if action in (ActionType.BET, ActionType.RAISE, ActionType.ALL_IN):
+            if equity > 0.65:
+                return 0.85
+            elif equity > 0.50:
+                return 0.70
+            elif equity > 0.40:
+                return 0.55
+            return 0.45
+
+        return baseline_conf
 
     def _implied_pot_odds(
         self, gs: GameState, hero: Player, strength: HandStrength,
@@ -262,34 +421,60 @@ class Advisor:
     def _resolve_postflop(
         self, gs: GameState, hero: Player, baseline: dict,
         equity: float | None, pot_odds_val: float | None,
-        exploit: dict | None = None,
+        exploit: dict | None = None, multiway_note: str | None = None,
     ) -> tuple[ActionType, int, float]:
         action = baseline["action"]
         confidence = baseline["confidence"]
         strength = baseline.get("hand_strength", HandStrength.WEAK_MADE)
         min_eq = self._min_call_equity(gs.street)
 
+        pot_control = multiway_note is not None and "控池" in multiway_note
+        if pot_control:
+            min_eq = max(min_eq, 0.45)
+
         effective_pot_odds = pot_odds_val
         implied = self._implied_pot_odds(gs, hero, strength)
         if implied is not None and pot_odds_val is not None:
             effective_pot_odds = implied
 
+        # Pot commitment: if remaining stack <= 1 BB, just shove
+        if hero.stack <= gs.big_blind and hero.stack > 0:
+            return ActionType.ALL_IN, hero.stack + hero.current_bet, 0.90
+
         if action == ActionType.FOLD:
-            if equity and effective_pot_odds and equity > effective_pot_odds and equity >= min_eq:
+            discounted_eq = self._action_based_equity_discount(gs, hero, equity)
+            if discounted_eq and effective_pot_odds and discounted_eq > effective_pot_odds and discounted_eq >= min_eq:
                 return ActionType.CALL, gs.current_bet, 0.55
-            if (exploit and exploit.get("call_more") and equity
-                    and effective_pot_odds and equity > effective_pot_odds * 0.85
-                    and equity >= min_eq
+            if (exploit and exploit.get("call_more") and discounted_eq
+                    and effective_pot_odds and discounted_eq > effective_pot_odds * 0.85
+                    and discounted_eq >= min_eq
                     and strength.value >= HandStrength.WEAK_MADE.value):
                 return ActionType.CALL, gs.current_bet, 0.50
             return ActionType.FOLD, 0, confidence
 
         if action == ActionType.CALL:
-            if equity and equity < min_eq:
+            discounted_eq = self._action_based_equity_discount(gs, hero, equity)
+            final_eq = discounted_eq
+            if final_eq and final_eq < min_eq:
                 return ActionType.FOLD, 0, 0.65
-            if equity and effective_pot_odds and equity < effective_pot_odds * 0.8:
+            if final_eq and effective_pot_odds and final_eq < effective_pot_odds * 0.8:
                 return ActionType.FOLD, 0, 0.60
-            if (equity and equity > 0.70
+            # TRASH with no draw should not call even if equity looks ok
+            if (strength is not None
+                    and strength.value <= HandStrength.TRASH.value
+                    and gs.street != Street.PREFLOP):
+                return ActionType.FOLD, 0, 0.60
+            # Pot commitment: if call commits 90%+ of stack, go all-in or fold
+            call_amount = gs.current_bet - hero.current_bet
+            if call_amount > 0 and hero.stack > 0:
+                commit_ratio = call_amount / hero.stack
+                if commit_ratio >= 0.9:
+                    pot_odds_for_allin = hero.stack / (gs.pot + hero.stack)
+                    if final_eq and final_eq >= pot_odds_for_allin * 0.85:
+                        return ActionType.ALL_IN, hero.stack + hero.current_bet, 0.80
+                    else:
+                        return ActionType.FOLD, 0, 0.65
+            if (final_eq and final_eq > 0.70
                     and strength.value >= HandStrength.STRONG_MADE.value):
                 facing = gs.current_bet
                 amt = select_raise_size(gs, hero, strength, facing, gs.pot)
@@ -298,6 +483,9 @@ class Advisor:
 
         if action == ActionType.CHECK:
             if self._should_cbet(gs, hero, equity, strength):
+                if (strength.value <= HandStrength.WEAK_MADE.value
+                        and self._is_bottom_pair(hero, gs.board)):
+                    return ActionType.CHECK, 0, 0.60
                 is_value = strength.value >= HandStrength.MEDIUM_MADE.value
                 amt = select_bet_size(gs, hero, strength, gs.pot, is_value)
                 return ActionType.BET, amt, 0.65
@@ -305,13 +493,31 @@ class Advisor:
                 amt = select_bet_size(gs, hero, strength, gs.pot, True)
                 return ActionType.BET, amt, 0.60
             if (exploit and exploit.get("increase_bluff")
+                    and not exploit.get("no_bluff")
                     and equity and equity > 0.25
-                    and strength.value <= HandStrength.WEAK_DRAW.value):
+                    and strength.value <= HandStrength.WEAK_DRAW.value
+                    and gs.street != Street.RIVER):
                 amt = select_bet_size(gs, hero, strength, gs.pot, False)
                 return ActionType.BET, amt, 0.55
             return ActionType.CHECK, 0, confidence
 
         if action == ActionType.BET:
+            if (strength.value <= HandStrength.WEAK_MADE.value
+                    and self._is_bottom_pair(hero, gs.board)):
+                return ActionType.CHECK, 0, 0.60
+            current_spr = baseline.get("spr", float("inf"))
+            if current_spr <= 1.0:
+                if (strength.value >= HandStrength.WEAK_MADE.value
+                        and equity and equity >= 0.45):
+                    return ActionType.ALL_IN, hero.stack, confidence
+                else:
+                    return ActionType.CHECK, 0, 0.60
+            if gs.street == Street.RIVER and equity:
+                river_floor = 0.50
+                if equity < river_floor:
+                    return ActionType.CHECK, 0, 0.60
+            if gs.street == Street.TURN and equity and equity < 0.35:
+                return ActionType.CHECK, 0, 0.60
             is_value = strength.value >= HandStrength.MEDIUM_MADE.value
             amt = select_bet_size(gs, hero, strength, gs.pot, is_value)
             if equity and equity > 0.70 and is_value:
@@ -322,11 +528,28 @@ class Advisor:
             return ActionType.BET, amt, confidence
 
         if action == ActionType.RAISE:
+            current_spr = baseline.get("spr", float("inf"))
+            if current_spr <= 1.0 and strength.value >= HandStrength.WEAK_MADE.value:
+                return ActionType.ALL_IN, hero.stack, confidence
             facing = gs.current_bet
             amt = select_raise_size(gs, hero, strength, facing, gs.pot)
             return ActionType.RAISE, amt, confidence
 
         return action, 0, confidence
+
+    @staticmethod
+    def _is_bottom_pair(hero: Player, board: list[int]) -> bool:
+        """Check if hero has bottom pair (pair rank < second-highest board rank)."""
+        if not hero.hole_cards or not board:
+            return False
+        from treys import Card as TreysCard
+        hero_ranks = [TreysCard.get_rank_int(c) for c in hero.hole_cards]
+        board_ranks = sorted([TreysCard.get_rank_int(c) for c in board], reverse=True)
+        for hr in hero_ranks:
+            if hr in board_ranks:
+                if len(board_ranks) >= 2 and hr < board_ranks[1]:
+                    return True
+        return False
 
     def _should_cbet(
         self, gs: GameState, hero: Player,
@@ -355,7 +578,7 @@ class Advisor:
         for opp in opponents:
             if opp.name in self.profiles:
                 profile = self.profiles[opp.name]
-                label = classify_style(profile)
+                label = classify_style(profile, num_players=len(gs.players))
                 tilt = self.anti_misjudgment.detect_tilt(opp.name, profile)
                 base = profile.summary()
                 if tilt.is_tilting:
@@ -381,6 +604,170 @@ class Advisor:
             confidences.append(min(avg_conf, 1.0))
         return sum(confidences) / len(confidences) if confidences else 0.0
 
+    def _action_sequence_discount(
+        self, gs: GameState, hero: Player, equity: float,
+    ) -> float:
+        """Discount equity based on opponent's cumulative action sequence across streets."""
+        if gs.street == Street.PREFLOP or equity is None:
+            return equity
+
+        opp_calls = 0
+        opp_raises = 0
+        for street in (Street.FLOP, Street.TURN, Street.RIVER):
+            actions = gs.action_history.get(street, [])
+            for a in actions:
+                if a.player_name == hero.name:
+                    continue
+                if a.action_type == ActionType.CALL:
+                    opp_calls += 1
+                elif a.action_type in (ActionType.RAISE, ActionType.BET):
+                    opp_raises += 1
+
+        if opp_calls == 0 and opp_raises == 0:
+            return equity
+
+        discount = 1.0 - (opp_calls * 0.05 + opp_raises * 0.10)
+        discount = max(discount, 0.60)
+        return equity * discount
+
+    def _action_based_equity_discount(
+        self, gs: GameState, hero: Player, equity: float,
+    ) -> float:
+        """Discount equity when facing a raise or a significant bet."""
+        if gs.street == Street.PREFLOP or equity is None:
+            return equity
+
+        street_actions = gs.action_history.get(gs.street, [])
+        hero_bet = any(
+            a.player_name == hero.name
+            and a.action_type in (ActionType.BET, ActionType.RAISE)
+            for a in street_actions
+        )
+        opp_raised = any(
+            a.player_name != hero.name
+            and a.action_type in (ActionType.RAISE, ActionType.ALL_IN)
+            for a in street_actions
+        )
+        opp_bet = any(
+            a.player_name != hero.name
+            and a.action_type in (ActionType.BET, ActionType.ALL_IN)
+            for a in street_actions
+        )
+
+        bet_size = gs.current_bet - hero.current_bet
+        pot_ratio = bet_size / gs.pot if gs.pot > 0 else 1.0
+
+        if hero_bet and opp_raised:
+            if gs.street == Street.RIVER:
+                if pot_ratio > 1.0:
+                    return equity * 0.55
+                elif pot_ratio > 0.5:
+                    return equity * 0.65
+                else:
+                    return equity * 0.75
+            elif gs.street == Street.TURN:
+                if pot_ratio > 1.0:
+                    return equity * 0.65
+                elif pot_ratio > 0.5:
+                    return equity * 0.75
+                else:
+                    return equity * 0.82
+            else:
+                if pot_ratio > 1.0:
+                    return equity * 0.72
+                else:
+                    return equity * 0.82
+
+        if opp_bet and not hero_bet and pot_ratio > 0.5:
+            if gs.street == Street.RIVER:
+                if pot_ratio > 1.0:
+                    return equity * 0.70
+                else:
+                    return equity * 0.82
+            elif gs.street == Street.TURN:
+                if pot_ratio > 1.0:
+                    return equity * 0.75
+                else:
+                    return equity * 0.85
+            else:
+                if pot_ratio > 1.0:
+                    return equity * 0.80
+                else:
+                    return equity * 0.88
+
+        return equity
+
+    def _cold_start_discount(
+        self, gs: GameState, hero: Player, equity: float,
+    ) -> float:
+        """Discount raw monte-carlo equity when we have little data on opponents."""
+        opponents = [p for p in gs.players_in_hand if p.name != hero.name]
+        if not opponents:
+            return equity
+        min_hands = min(
+            (self.profiles[o.name].total_hands if o.name in self.profiles else 0)
+            for o in opponents
+        )
+        if min_hands >= 20:
+            return equity
+        if gs.street == Street.PREFLOP:
+            discount = 0.90 + 0.10 * (min_hands / 20)
+        else:
+            discount = 0.85 + 0.15 * (min_hands / 20)
+        return equity * discount
+
+    def _adjust_equity_vs_tight_allin(
+        self, gs: GameState, hero: Player, equity: float,
+    ) -> float:
+        preflop_actions = gs.action_history.get(Street.PREFLOP, [])
+        opp_raise_count = sum(
+            1 for a in preflop_actions
+            if a.action_type in (ActionType.RAISE, ActionType.ALL_IN)
+            and a.player_name != hero.name
+        )
+        facing_allin = any(
+            a.action_type == ActionType.ALL_IN
+            for a in preflop_actions
+            if a.player_name != hero.name
+        )
+
+        if opp_raise_count == 0 and not facing_allin:
+            return equity
+
+        opponents = [p for p in gs.players_in_hand if p.name != hero.name]
+        for opp in opponents:
+            profile = self.profiles.get(opp.name)
+            if profile is None:
+                continue
+            vpip = profile.get_stat("vpip")
+            vpip_conf = profile.get_confidence("vpip")
+
+            if facing_allin:
+                if vpip < 0.15 and vpip_conf > 0.25:
+                    return equity * 0.70
+                elif vpip < 0.22 and vpip_conf > 0.25:
+                    return equity * 0.85
+            elif opp_raise_count >= 2:
+                # Facing 4bet: heavy discount
+                if vpip < 0.22 and vpip_conf > 0.25:
+                    return equity * 0.75
+                else:
+                    return equity * 0.85
+            elif opp_raise_count >= 1:
+                # Facing 3bet: moderate discount
+                if vpip < 0.22 and vpip_conf > 0.25:
+                    return equity * 0.85
+                else:
+                    return equity * 0.90
+
+        if facing_allin:
+            return equity
+        if opp_raise_count >= 2:
+            return equity * 0.88
+        elif opp_raise_count >= 1:
+            return equity * 0.93
+        return equity
+
     def _compute_exploit(self, gs: GameState, hero: Player) -> tuple[str | None, float]:
         opponents = [p for p in gs.players_in_hand if p.name != hero.name]
         if not opponents:
@@ -388,6 +775,7 @@ class Advisor:
 
         from engine.gto_baseline import _hero_position_is_ip
         hero_is_ip = _hero_position_is_ip(gs, hero.name)
+        facing_bet = gs.current_bet > hero.current_bet
 
         best_note = None
         max_magnitude = 0.0
@@ -406,6 +794,8 @@ class Advisor:
             top_exploits = self.exploit_engine.top_exploits(profile, hero_is_ip, 2)
 
             for adj in top_exploits:
+                if adj.category == ExploitCategory.DEFENSE and not facing_bet:
+                    continue
                 effective_mag = abs(adj.magnitude) * modifier
                 if effective_mag > max_magnitude:
                     max_magnitude = effective_mag
@@ -437,6 +827,19 @@ class Advisor:
         self, gs: GameState, hero: Player, equity: float
     ) -> str | None:
         opponents = [p for p in gs.players_in_hand if p.name != hero.name]
+
+        if gs.street == Street.PREFLOP:
+            committed = [
+                p for p in opponents
+                if p.current_bet > gs.big_blind or p.is_all_in
+            ]
+            effective_opponents = len(committed)
+        else:
+            effective_opponents = len(opponents)
+
+        if effective_opponents < 2:
+            return None
+
         opp_profiles = []
         for opp in opponents:
             profile = self.profiles.get(opp.name)
@@ -448,7 +851,7 @@ class Advisor:
 
         street = gs.street.name.lower() if gs.street != Street.PREFLOP else "flop"
         analysis = analyze_multiway(opp_profiles, equity, gs.pot, street)
-        return f"多人底池({analysis.num_opponents}人): {analysis.strategy_note}"
+        return f"多人底池({effective_opponents + 1}人): {analysis.strategy_note}"
 
     def update_opponent_range(
         self, player_name: str, position: str, action: str,

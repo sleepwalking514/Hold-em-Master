@@ -351,13 +351,52 @@ def _is_allin_runout_needed(gs: GameState) -> bool:
 def _finish_hand(gs: GameState, winnings: dict[str, int], hero_name: str,
                   advisor: Advisor | None = None,
                   session_rec: SessionRecorder | None = None,
-                  hand_rec: HandRecorder | None = None) -> None:
+                  hand_rec: HandRecorder | None = None,
+                  ai_opponents: dict[str, "AIOpponent"] | None = None) -> None:
     if gs.game_mode == GameMode.LIVE:
         record_showdown_cards(gs, hero_name)
     if advisor:
         _update_opponent_profiles(gs, hero_name, advisor, winnings)
+
+    opponent_labels = None
+    hero_reads = None
+    if ai_opponents:
+        opponent_labels = {}
+        for name, ai in ai_opponents.items():
+            cfg = ai.config
+            opponent_labels[name] = {
+                "label": cfg.label,
+                "vpip_target": round(cfg.vpip_target, 3),
+                "pfr_target": round(cfg.pfr_target, 3),
+                "aggression_freq_target": round(cfg.aggression_freq_target, 3),
+                "fold_to_cbet": round(cfg.fold_to_cbet, 3),
+                "bluff_frequency": round(cfg.bluff_frequency, 3),
+                "tilt_variance": round(cfg.tilt_variance, 3),
+            }
+    if advisor and advisor.profiles:
+        hero_reads = {}
+        for name, profile in advisor.profiles.items():
+            from profiler.style_labeler import classify_style
+            style_result = classify_style(profile, num_players=len(gs.players))
+            hero_reads[name] = {
+                "style": str(style_result),
+                "style_primary": style_result.primary,
+                "style_secondary": style_result.secondary,
+                "style_confidence": round(style_result.confidence, 3),
+                "total_hands": profile.total_hands,
+                "vpip": round(profile.get_stat("vpip"), 3),
+                "pfr": round(profile.get_stat("pfr"), 3),
+                "aggression_freq": round(profile.get_stat("aggression_freq"), 3),
+                "fold_to_cbet": round(profile.get_stat("fold_to_cbet"), 3),
+                "wtsd": round(profile.get_stat("wtsd"), 3),
+                "wsd": round(profile.get_stat("wsd"), 3),
+                "cbet_flop": round(profile.get_stat("cbet_flop"), 3),
+                "three_bet_pct": round(profile.get_stat("three_bet_pct"), 3),
+                "steal": round(profile.get_stat("steal"), 3),
+            }
+
     if session_rec:
-        path = session_rec.export_hand(gs, winnings, hand_rec)
+        path = session_rec.export_hand(gs, winnings, hand_rec, opponent_labels, hero_reads)
         if advisor and advisor.profiles:
             session_rec.record_profile_snapshot(gs.hand_number, advisor.profiles)
     else:
@@ -1087,7 +1126,7 @@ def sim_play_hand(
             display_showdown(gs)
             winnings = gs.settle()
             display_settlement(winnings)
-        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
         return
 
     display_table(gs, hero_name)
@@ -1109,7 +1148,7 @@ def sim_play_hand(
             display_table(gs, hero_name)
             if _is_allin_runout_needed(gs):
                 winnings = sim_handle_allin_runout(gs, hero_name)
-                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
                 return
             break
 
@@ -1124,11 +1163,13 @@ def sim_play_hand(
         display_showdown(gs)
         winnings = gs.settle()
         display_settlement(winnings)
-    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
 
 
 def run_sim_mode(skip_setup: bool = False) -> None:
     """AI对战模式主循环。"""
+    from testing.simulation.learning_convergence import LearningConvergenceTracker
+
     if skip_setup:
         gs, hero_name, ai_opponents = quick_sim_session()
     else:
@@ -1142,6 +1183,10 @@ def run_sim_mode(skip_setup: bool = False) -> None:
             prior_key = STYLE_ALIASES.get(ai.config.label, "未知") if ai else "未知"
             profiles[p.name] = create_profile(p.name, prior_key)
     advisor.set_profiles(profiles)
+
+    convergence_tracker = LearningConvergenceTracker()
+    for name, ai in ai_opponents.items():
+        convergence_tracker.register(name, ai.config)
 
     display_message(f"\n对战开始! (AI对战模式 + AI顾问) 按 Ctrl+C 随时退出\n", style="bold green")
 
@@ -1162,6 +1207,9 @@ def run_sim_mode(skip_setup: bool = False) -> None:
                 break
 
             sim_play_hand(gs, hero_name, advisor, ai_opponents, session_rec)
+
+            if gs.hand_number % 5 == 0:
+                convergence_tracker.record(gs.hand_number, advisor.profiles)
 
             for p in list(gs.players):
                 if p.stack <= 0 and p.name != hero_name:
@@ -1187,6 +1235,19 @@ def run_sim_mode(skip_setup: bool = False) -> None:
     display_message("\n最终筹码:", style="bold")
     for p in gs.players:
         display_message(f"  {p.name}: {p.stack}")
+
+    display_message("\n" + convergence_tracker.summary_report())
+
+    if session_rec and session_rec.session_dir:
+        import json as _json
+        conv_path = session_rec.session_dir / "convergence_data.json"
+        with open(conv_path, "w", encoding="utf-8") as f:
+            _json.dump(convergence_tracker.to_json(), f, indent=2, ensure_ascii=False)
+
+        analysis_path = session_rec.session_dir / "convergence_analysis.txt"
+        with open(analysis_path, "w", encoding="utf-8") as f:
+            f.write(convergence_tracker.detailed_report(advisor.profiles))
+        display_message(f"  收敛分析报告: {analysis_path}", style="dim")
 
     _generate_end_charts(session_rec)
 
@@ -1275,7 +1336,7 @@ def sim_auto_play_hand(
             display_showdown(gs)
             winnings = gs.settle()
             display_settlement(winnings)
-        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+        _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
         return
 
     display_table(gs, hero_name)
@@ -1297,7 +1358,7 @@ def sim_auto_play_hand(
             display_table(gs, hero_name)
             if _is_allin_runout_needed(gs):
                 winnings = sim_handle_allin_runout(gs, hero_name)
-                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+                _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
                 return
             break
 
@@ -1312,10 +1373,10 @@ def sim_auto_play_hand(
         display_showdown(gs)
         winnings = gs.settle()
         display_settlement(winnings)
-    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec)
+    _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
 
 
-def run_sim_auto_mode(max_hands: int = 50) -> None:
+def run_sim_auto_mode(max_hands: int = 60) -> None:
     gs, hero_name, ai_opponents = quick_sim_session()
 
     advisor = Advisor()
@@ -1326,6 +1387,28 @@ def run_sim_auto_mode(max_hands: int = 50) -> None:
             prior_key = STYLE_ALIASES.get(ai.config.label, "未知") if ai else "未知"
             profiles[p.name] = create_profile(p.name, prior_key)
     advisor.set_profiles(profiles)
+
+    from testing.simulation.learning_convergence import LearningConvergenceTracker
+    convergence_tracker = LearningConvergenceTracker()
+    for name, ai in ai_opponents.items():
+        convergence_tracker.register(name, ai.config)
+
+    from testing.simulation.hand_analysis_common import HandSummary
+    from testing.simulation.catastrophic_hands import CatastrophicHandTracker
+    from testing.simulation.bleed_pattern import BleedPatternTracker
+    from testing.simulation.equity_trajectory import EquityTrajectoryTracker
+    from testing.simulation.positional_leak import PositionalLeakTracker
+    from testing.simulation.exploit_effectiveness import ExploitEffectivenessTracker
+    from testing.simulation.decision_quality import DecisionQualityTracker
+
+    analysis_trackers = [
+        CatastrophicHandTracker(big_blind=gs.big_blind),
+        BleedPatternTracker(big_blind=gs.big_blind),
+        EquityTrajectoryTracker(big_blind=gs.big_blind),
+        PositionalLeakTracker(big_blind=gs.big_blind),
+        ExploitEffectivenessTracker(big_blind=gs.big_blind),
+        DecisionQualityTracker(big_blind=gs.big_blind),
+    ]
 
     display_message(
         f"\n全自动模拟开始! 共 {max_hands} 手 按 Ctrl+C 提前终止\n",
@@ -1355,6 +1438,17 @@ def run_sim_auto_mode(max_hands: int = 50) -> None:
 
             sim_auto_play_hand(gs, hero_name, advisor, ai_opponents, session_rec)
 
+            # Feed hand data to analysis trackers
+            if session_rec and session_rec.session_dir:
+                hand_path = session_rec.session_dir / f"hand_{gs.hand_number:03d}.json"
+                if hand_path.exists():
+                    hand_summary = HandSummary.from_json(hand_path)
+                    for tracker in analysis_trackers:
+                        tracker.record(hand_summary)
+
+            if gs.hand_number % 5 == 0:
+                convergence_tracker.record(gs.hand_number, advisor.profiles)
+
             for p in list(gs.players):
                 if p.stack <= 0 and p.name != hero_name:
                     gs.players.remove(p)
@@ -1379,20 +1473,31 @@ def run_sim_auto_mode(max_hands: int = 50) -> None:
     for p in gs.players:
         display_message(f"  {p.name}: {p.stack}")
 
+    display_message("\n" + convergence_tracker.summary_report())
+
+    if session_rec and session_rec.session_dir:
+        import json as _json
+        analysis_dir = session_rec.session_dir / "analysis"
+        analysis_dir.mkdir(exist_ok=True)
+
+        conv_path = analysis_dir / "convergence_data.json"
+        with open(conv_path, "w", encoding="utf-8") as f:
+            _json.dump(convergence_tracker.to_json(), f, indent=2, ensure_ascii=False)
+
+        analysis_path = analysis_dir / "convergence_analysis.txt"
+        with open(analysis_path, "w", encoding="utf-8") as f:
+            f.write(convergence_tracker.detailed_report(advisor.profiles))
+        display_message(f"  收敛分析报告: {analysis_path}", style="dim")
+
+        for tracker in analysis_trackers:
+            tracker.write_outputs(analysis_dir)
+        display_message(f"  策略分析报告已生成 → analysis/ ({len(analysis_trackers)}个模块)", style="dim")
+
     _generate_end_charts(session_rec)
 
 
 def _generate_end_charts(session_rec: SessionRecorder | None) -> None:
-    if not session_rec:
-        return
-    try:
-        charts = generate_session_charts(session_rec.session_dir)
-        if charts:
-            display_message("\n学习曲线已生成:", style="bold cyan")
-            for c in charts:
-                display_message(f"  {c}", style="dim")
-    except Exception as e:
-        display_message(f"生成图表失败: {e}", style="dim red")
+    pass
 
 
 @click.command()
@@ -1401,7 +1506,7 @@ def _generate_end_charts(session_rec: SessionRecorder | None) -> None:
 @click.option("--no-advisor", is_flag=True, help="禁用AI顾问")
 @click.option("--sim", is_flag=True, help="AI对战模式：与AI对手对战")
 @click.option("--sim-auto", is_flag=True, help="全自动模拟：无需任何输入，批量生成数据")
-@click.option("--max-hands", type=int, default=50, help="全自动模式最大手数 (默认50)")
+@click.option("--max-hands", type=int, default=60, help="全自动模式最大手数 (默认60)")
 def main(skip_setup: bool, test: bool, no_advisor: bool, sim: bool,
          sim_auto: bool, max_hands: int) -> None:
     if sim_auto:

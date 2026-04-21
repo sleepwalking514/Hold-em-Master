@@ -3,13 +3,16 @@ from __future__ import annotations
 import random
 from typing import Optional
 
-from treys import Evaluator
+from treys import Evaluator, Card
 
 from env.action_space import ActionType, Street
 from env.game_state import GameState, Player
 from testing.simulation.label_presets import AIOpponentConfig, get_preset
 
 EVALUATOR = Evaluator()
+
+_IP_POSITIONS = {"BTN", "CO"}
+_OOP_POSITIONS = {"SB", "BB", "UTG"}
 
 
 class AIOpponent:
@@ -24,6 +27,13 @@ class AIOpponent:
             return self._decide_preflop(game_state, player)
         return self._decide_postflop(game_state, player)
 
+    def _position_modifier(self, position: str) -> float:
+        if position in _IP_POSITIONS:
+            return 0.04
+        if position in _OOP_POSITIONS:
+            return -0.03
+        return 0.0
+
     def _decide_preflop(
         self, gs: GameState, player: Player
     ) -> tuple[ActionType, int]:
@@ -32,7 +42,8 @@ class AIOpponent:
 
         hand_strength = self._preflop_strength(player.hole_cards)
         noise = self._rng.gauss(0, self.config.tilt_variance)
-        effective_strength = max(0.0, min(1.0, hand_strength + noise))
+        pos_mod = self._position_modifier(player.position)
+        effective_strength = max(0.0, min(1.0, hand_strength + noise + pos_mod))
 
         enter_threshold = 1.0 - self.config.vpip_target
         raise_threshold = 1.0 - self.config.pfr_target
@@ -83,8 +94,10 @@ class AIOpponent:
 
         hand_rank = EVALUATOR.evaluate(player.hole_cards, gs.board)
         strength = 1.0 - (hand_rank / 7462.0)
+        draw_bonus = self._draw_bonus(player.hole_cards, gs.board)
         noise = self._rng.gauss(0, self.config.tilt_variance)
-        effective = max(0.0, min(1.0, strength + noise))
+        pos_mod = self._position_modifier(player.position) * 0.5
+        effective = max(0.0, min(1.0, strength + draw_bonus + noise + pos_mod))
 
         facing_bet = gs.current_bet > player.current_bet
         call_amount = gs.current_bet - player.current_bet
@@ -99,6 +112,7 @@ class AIOpponent:
         pot_odds = call_amount / max(gs.pot + call_amount, 1)
         aggr = self.config.aggression_freq_target
         fold_cbet = self.config.fold_to_cbet
+        passivity = self.config.passivity
 
         if strength > 0.75:
             if self._rng.random() < aggr:
@@ -107,7 +121,8 @@ class AIOpponent:
             return ActionType.CALL, gs.current_bet
 
         if strength > pot_odds + 0.05:
-            if self._rng.random() < fold_cbet and strength < 0.4:
+            fold_chance = fold_cbet * (1.0 - passivity * 0.3) if strength < 0.4 else 0.0
+            if self._rng.random() < fold_chance:
                 return ActionType.FOLD, 0
             return ActionType.CALL, gs.current_bet
 
@@ -123,6 +138,7 @@ class AIOpponent:
     ) -> tuple[ActionType, int]:
         aggr = self.config.aggression_freq_target
         bluff_freq = self.config.bluff_frequency
+        passivity = self.config.passivity
 
         should_bet = False
         if strength > 0.55:
@@ -130,25 +146,91 @@ class AIOpponent:
         elif strength < 0.25:
             should_bet = self._rng.random() < bluff_freq
         else:
-            should_bet = self._rng.random() < aggr * 0.5
+            medium_freq = aggr * 0.5 + passivity * 0.15
+            should_bet = self._rng.random() < medium_freq
 
         if should_bet:
-            if strength > 0.7:
-                size = int(gs.pot * self._rng.uniform(0.6, 0.9))
-            elif strength < 0.25:
-                size = int(gs.pot * self._rng.uniform(0.4, 0.7))
-            else:
-                size = int(gs.pot * self._rng.uniform(0.3, 0.5))
+            size = self._bet_size(gs, strength)
             size = max(gs.big_blind, min(size, player.stack))
             if size >= player.stack:
                 return ActionType.ALL_IN, player.stack + player.current_bet
             return ActionType.BET, size
+
+        if strength > 0.65 and self._rng.random() < aggr * 0.4:
+            return ActionType.CHECK, 0
+
         return ActionType.CHECK, 0
+
+    def _bet_size(self, gs: GameState, strength: float) -> int:
+        label = self.config.label
+        pot = max(gs.pot, 1)
+
+        if label in ("Fish", "CallStation"):
+            if strength > 0.7:
+                ratio = self._rng.uniform(0.35, 0.65)
+            elif strength < 0.25:
+                ratio = self._rng.uniform(0.25, 0.50)
+            else:
+                ratio = self._rng.uniform(0.25, 0.45)
+        elif label == "Maniac":
+            if strength > 0.7:
+                ratio = self._rng.uniform(0.75, 1.1)
+            elif strength < 0.25:
+                ratio = self._rng.uniform(0.55, 0.85)
+            else:
+                ratio = self._rng.uniform(0.50, 0.75)
+        elif label == "Nit":
+            if strength > 0.7:
+                ratio = self._rng.uniform(0.45, 0.65)
+            elif strength < 0.25:
+                ratio = self._rng.uniform(0.35, 0.55)
+            else:
+                ratio = self._rng.uniform(0.30, 0.45)
+        elif label == "LAG":
+            if strength > 0.7:
+                ratio = self._rng.uniform(0.60, 0.95)
+            elif strength < 0.25:
+                ratio = self._rng.uniform(0.50, 0.80)
+            else:
+                ratio = self._rng.uniform(0.40, 0.65)
+        else:
+            if strength > 0.7:
+                ratio = self._rng.uniform(0.55, 0.80)
+            elif strength < 0.25:
+                ratio = self._rng.uniform(0.40, 0.65)
+            else:
+                ratio = self._rng.uniform(0.35, 0.55)
+
+        return int(pot * ratio)
+
+    def _draw_bonus(self, hole_cards: list[int], board: list[int]) -> float:
+        if len(board) >= 5:
+            return 0.0
+
+        all_cards = hole_cards + board
+        suits = [Card.get_suit_int(c) for c in all_cards]
+        ranks = sorted([Card.get_rank_int(c) for c in all_cards])
+
+        bonus = 0.0
+
+        for s in set(suits):
+            count = suits.count(s)
+            if count == 4:
+                bonus = max(bonus, 0.12)
+            elif count == 3 and len(board) <= 3:
+                bonus = max(bonus, 0.04)
+
+        unique_ranks = sorted(set(ranks))
+        for i in range(len(unique_ranks) - 3):
+            window = unique_ranks[i:i + 5] if i + 5 <= len(unique_ranks) else unique_ranks[i:]
+            if len(window) >= 4 and window[-1] - window[0] <= 4:
+                bonus = max(bonus, 0.08)
+
+        return bonus
 
     def _preflop_strength(self, hole_cards: list[int]) -> float:
         if not hole_cards or len(hole_cards) < 2:
             return 0.5
-        from treys import Card
         r1 = Card.get_rank_int(hole_cards[0])
         r2 = Card.get_rank_int(hole_cards[1])
         s1 = Card.get_suit_int(hole_cards[0])

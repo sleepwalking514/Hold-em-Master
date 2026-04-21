@@ -76,6 +76,32 @@ def _count_straight_outs(hole_cards: list[int], board: list[int]) -> int:
     return outs
 
 
+def _kicker_rank_on_trips_board(hole_cards: list[int], board: list[int]) -> HandStrength:
+    """When board has trips, classify by kicker quality instead of absolute rank."""
+    board_ranks: dict[int, int] = {}
+    for c in board:
+        r = Card.get_rank_int(c)
+        board_ranks[r] = board_ranks.get(r, 0) + 1
+
+    trip_rank = next((r for r, cnt in board_ranks.items() if cnt >= 3), None)
+    if trip_rank is None:
+        return HandStrength.MEDIUM_MADE
+
+    hero_ranks = sorted([Card.get_rank_int(c) for c in hole_cards], reverse=True)
+
+    for hr in hero_ranks:
+        if hr == trip_rank:
+            return HandStrength.STRONG_MADE
+    best_kicker = hero_ranks[0]
+    # A=12, K=11, Q=10
+    if best_kicker >= 12:
+        return HandStrength.MEDIUM_MADE
+    elif best_kicker >= 10:
+        return HandStrength.WEAK_MADE
+    else:
+        return HandStrength.TRASH
+
+
 def classify_hand_strength(
     rank: int,
     board_len: int,
@@ -84,6 +110,18 @@ def classify_hand_strength(
 ) -> HandStrength:
     """Classify hand strength considering both made hand rank and draw potential."""
     made_strength = _classify_made_hand(rank, board_len)
+
+    if hole_cards is not None and board is not None and board_len >= 3:
+        board_rank_counts: dict[int, int] = {}
+        for c in board:
+            r = Card.get_rank_int(c)
+            board_rank_counts[r] = board_rank_counts.get(r, 0) + 1
+        if any(cnt >= 3 for cnt in board_rank_counts.values()):
+            trips_strength = _kicker_rank_on_trips_board(hole_cards, board)
+            made_strength = min(made_strength, trips_strength, key=lambda h: h.value)
+
+        if made_strength == HandStrength.MEDIUM_MADE and 2468 <= rank <= 3325:
+            made_strength = _classify_two_pair(hole_cards, board, board_rank_counts)
 
     if hole_cards is None or board is None or board_len >= 5:
         return made_strength
@@ -106,21 +144,48 @@ def classify_hand_strength(
     return max(made_strength, draw_strength, key=lambda h: h.value)
 
 
+def _classify_two_pair(
+    hole_cards: list[int], board: list[int],
+    board_rank_counts: dict[int, int],
+) -> HandStrength:
+    """Distinguish strong two pair (both hole cards paired) from weak (board pair + one)."""
+    hero_ranks = [Card.get_rank_int(c) for c in hole_cards]
+    board_ranks_sorted = sorted(
+        [Card.get_rank_int(c) for c in board], reverse=True,
+    )
+    hero_paired = sum(1 for hr in hero_ranks if hr in board_rank_counts)
+    board_has_pair = any(cnt >= 2 for cnt in board_rank_counts.values())
+
+    if hero_paired == 2 and hero_ranks[0] != hero_ranks[1]:
+        top2_board = board_ranks_sorted[:2] if len(board_ranks_sorted) >= 2 else board_ranks_sorted
+        if all(hr >= top2_board[-1] for hr in hero_ranks):
+            return HandStrength.STRONG_MADE
+        return HandStrength.MEDIUM_MADE
+
+    if board_has_pair and hero_paired <= 1:
+        paired_rank = hero_ranks[0] if hero_ranks[0] in board_rank_counts else hero_ranks[1] if hero_ranks[1] in board_rank_counts else None
+        if paired_rank is not None and len(board_ranks_sorted) >= 2 and paired_rank < board_ranks_sorted[1]:
+            return HandStrength.WEAK_MADE
+    return HandStrength.MEDIUM_MADE
+
+
 def _classify_made_hand(rank: int, board_len: int) -> HandStrength:
     """Classify based on treys rank only (made hand strength).
 
     Treys ranks: 1 (royal flush) → 7462 (worst high card).
-    1-322: straight flush+  |  323-1600: quads/full house
-    1601-3500: flush/straight  |  3501-5000: three-of-a-kind/two pair
-    5001-6185: one pair  |  6186-7462: high card
+    1-10: straight flush  |  11-166: four of a kind  |  167-322: full house
+    323-1599: flush  |  1600-1609: straight  |  1610-2467: three of a kind
+    2468-3325: two pair  |  3326-6185: one pair  |  6186-7462: high card
     """
     if rank <= 322:
         return HandStrength.MONSTER
-    elif rank <= 1600:
+    elif rank <= 1609:
         return HandStrength.STRONG_MADE
-    elif rank <= 3500:
+    elif rank <= 2467:
+        return HandStrength.STRONG_MADE
+    elif rank <= 3325:
         return HandStrength.MEDIUM_MADE
-    elif rank <= 5000:
+    elif rank <= 4500:
         return HandStrength.WEAK_MADE
     elif rank <= 6185:
         return HandStrength.WEAK_MADE

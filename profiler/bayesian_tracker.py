@@ -28,6 +28,15 @@ class BayesianStat:
         return int((self.alpha - self.prior_alpha) + (self.beta - self.prior_beta))
 
     @property
+    def data_mean(self) -> float | None:
+        """Return mean of observed data only, ignoring prior. None if no data."""
+        n = self.observations
+        if n <= 0:
+            return None
+        obs_alpha = self.alpha - self.prior_alpha
+        return obs_alpha / n
+
+    @property
     def confidence(self) -> float:
         n = self.observations
         if n <= 0:

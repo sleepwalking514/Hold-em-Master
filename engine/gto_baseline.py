@@ -46,17 +46,16 @@ def _preflop_baseline(game_state: GameState, hero: Player) -> dict:
     suited = _cards_suited(hero.hole_cards[0], hero.hole_cards[1])
     hand = cards_to_hand(r1, r2, suited)
 
+    hero_bb = hero.stack / game_state.big_blind
     opponents = [p for p in game_state.players_in_hand if p.name != hero.name]
     if not opponents:
-        eff_bb = hero.stack / game_state.big_blind
+        eff_bb = hero_bb
     else:
         opp_effs = sorted(
             [effective_stack_bb(hero, v, game_state.big_blind) for v in opponents],
             reverse=True,
         )
-        # Use the largest effective stack (main threat) rather than the smallest
-        # Short stacks don't dictate our strategy — the deep opponents do
-        eff_bb = opp_effs[0]
+        eff_bb = max(opp_effs[0], min(hero_bb, 100))
 
     facing_raise = game_state.current_bet > game_state.big_blind
     facing_3bet = False

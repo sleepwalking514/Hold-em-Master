@@ -12,6 +12,7 @@ from profiler.player_profile import PlayerProfile
 from testing.simulation.ai_opponent import AIOpponent
 from testing.simulation.sim_dealer import SimDealer
 from testing.simulation.label_presets import AIOpponentConfig, get_preset
+from testing.simulation.learning_convergence import LearningConvergenceTracker
 
 
 @dataclass
@@ -66,6 +67,11 @@ class SimGameLoop:
             if not sp.is_hero:
                 profiles[sp.name] = PlayerProfile(sp.name, "未知")
         self.advisor.set_profiles(profiles)
+
+        self.convergence_tracker = LearningConvergenceTracker()
+        for sp in self.players:
+            if not sp.is_hero:
+                self.convergence_tracker.register(sp.name, sp.config)
 
     def run_hand(self, hero_auto: bool = True) -> HandResult:
         self.hand_count += 1
@@ -149,6 +155,10 @@ class SimGameLoop:
             all_hole_cards=hole_cards_map,
         )
         self.results.append(result)
+
+        if self.hand_count % 5 == 0:
+            self.convergence_tracker.record(self.hand_count, self.advisor.profiles)
+
         return result
 
     def run_batch(self, num_hands: int, hero_auto: bool = True) -> list[HandResult]:
@@ -156,6 +166,12 @@ class SimGameLoop:
         for _ in range(num_hands):
             results.append(self.run_hand(hero_auto))
         return results
+
+    def get_convergence_report(self) -> str:
+        return self.convergence_tracker.summary_report()
+
+    def get_convergence_json(self) -> list[dict]:
+        return self.convergence_tracker.to_json()
 
     def _play_street(
         self, gs: GameState, active: list[SimPlayer],

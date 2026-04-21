@@ -29,7 +29,7 @@ STYLE_DEFINITIONS = {
 }
 
 
-def classify_style(profile: PlayerProfile) -> StyleLabel:
+def classify_style(profile: PlayerProfile, num_players: int = 6) -> StyleLabel:
     vpip = profile.get_stat("vpip")
     aggr = profile.get_stat("aggression_freq")
     pfr = profile.get_stat("pfr")
@@ -39,19 +39,58 @@ def classify_style(profile: PlayerProfile) -> StyleLabel:
     aggr_conf = profile.get_confidence("aggression_freq")
     avg_conf = (vpip_conf + aggr_conf) / 2
 
-    if avg_conf < 0.15:
+    if avg_conf < 0.30:
         return StyleLabel("未知", "", avg_conf, "样本不足，无法判断风格")
+
+    # HU/short-handed: shift thresholds up since everyone plays wider
+    if num_players <= 2:
+        vpip_shift = 0.20
+        aggr_shift = 0.08
+    elif num_players <= 4:
+        vpip_shift = 0.08
+        aggr_shift = 0.03
+    else:
+        vpip_shift = 0.0
+        aggr_shift = 0.0
+
+    adjusted_defs = {}
+    for style, criteria in STYLE_DEFINITIONS.items():
+        vlo, vhi = criteria["vpip"]
+        alo, ahi = criteria["aggr"]
+        adjusted_defs[style] = {
+            "vpip": (min(vlo + vpip_shift, 0.95), min(vhi + vpip_shift, 1.0)),
+            "aggr": (min(alo + aggr_shift, 0.95), min(ahi + aggr_shift, 1.0)),
+            "desc": criteria["desc"],
+        }
 
     best_match = "Regular"
     best_score = 0.0
 
-    for style, criteria in STYLE_DEFINITIONS.items():
+    pfr_vpip_ratio = pfr / vpip if vpip > 0.05 else 0.0
+
+    for style, criteria in adjusted_defs.items():
         vpip_lo, vpip_hi = criteria["vpip"]
         aggr_lo, aggr_hi = criteria["aggr"]
 
         vpip_score = _range_score(vpip, vpip_lo, vpip_hi)
         aggr_score = _range_score(aggr, aggr_lo, aggr_hi)
-        score = vpip_score * 0.5 + aggr_score * 0.5
+        score = vpip_score * 0.4 + aggr_score * 0.4
+
+        if style == "TAG" and pfr_vpip_ratio < 0.50:
+            score *= 0.5
+        elif style == "LAG" and pfr_vpip_ratio < 0.45:
+            score *= 0.6
+        elif style == "Maniac" and pfr_vpip_ratio < 0.40:
+            score *= 0.7
+        elif style in ("CallStation", "Fish") and pfr_vpip_ratio > 0.60:
+            score *= 0.5
+
+        pfr_bonus = 0.0
+        if style in ("TAG", "LAG", "Maniac") and pfr_vpip_ratio > 0.55:
+            pfr_bonus = 0.2
+        elif style in ("CallStation", "Fish", "TightPassive") and pfr_vpip_ratio < 0.30:
+            pfr_bonus = 0.2
+        score += pfr_bonus
 
         if score > best_score:
             best_score = score

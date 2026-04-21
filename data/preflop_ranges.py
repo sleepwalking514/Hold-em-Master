@@ -13,6 +13,8 @@ HAND_TIERS = {
     7: ["A8o", "A7o", "A6o", "A5o", "K7s", "K6s", "K5s", "K9o", "Q8s", "J8s", "J9o", "T9o", "97s", "87s", "86s", "76s"],
     8: ["A4o", "A3o", "A2o", "K4s", "K3s", "K2s", "K8o", "Q7s", "Q6s", "Q5s", "Q9o", "J7s", "T7s", "96s", "85s", "75s", "65s", "54s"],
     9: ["K7o", "K6o", "K5o", "Q8o", "Q7o", "Q6o", "Q5o", "Q4s", "Q3s", "Q2s", "J6s", "J5s", "J8o", "J7o", "T6s", "T8o", "T7o", "98o", "87o", "95s", "84s", "74s", "64s", "53s", "43s"],
+    10: ["K4o", "K3o", "K2o", "Q4o", "Q3o", "Q2o", "J6o", "J5o", "J4s", "J3s", "J2s", "T6o", "T5s", "T4s", "96o", "94s", "93s", "85o", "83s", "75o", "73s", "63s", "52s", "42s", "32s"],
+    11: ["J4o", "J3o", "J2o", "T5o", "T4o", "T3o", "T2o", "95o", "94o", "93o", "92o", "84o", "83o", "82o", "74o", "73o", "72o", "64o", "63o", "62o", "54o", "53o", "52o", "43o", "42o", "32o"],
 }
 
 
@@ -37,17 +39,17 @@ def _normalize_hand(rank1: str, rank2: str, suited: bool) -> str:
 POSITION_OPEN_TIERS = {
     "UTG":   5, "UTG+1": 5, "UTG+2": 6,
     "MP":    6, "MP+1":  7,
-    "CO":    8, "BTN":   9,
-    "SB":    8, "BB":    0,
+    "CO":    8, "BTN":   8,
+    "SB":    7, "BB":    0,
 }
 
 STACK_DEPTH_ADJUSTMENTS = {
     "push_fold":  {"max_tier": 6, "description": "≤20bb push/fold"},
     "short":      {"max_tier": 7, "tier_shift": -1, "description": "20-40bb short"},
-    "medium":     {"max_tier": 8, "tier_shift": 0, "description": "40-60bb medium"},
-    "standard":   {"max_tier": 9, "tier_shift": 0, "description": "60-100bb standard"},
-    "deep":       {"max_tier": 9, "tier_shift": 1, "description": "100-200bb deep"},
-    "ultra_deep": {"max_tier": 9, "tier_shift": 1, "description": "200bb+ ultra deep"},
+    "medium":     {"max_tier": 11, "tier_shift": 0, "description": "40-60bb medium"},
+    "standard":   {"max_tier": 11, "tier_shift": 0, "description": "60-100bb standard"},
+    "deep":       {"max_tier": 11, "tier_shift": 1, "description": "100-200bb deep"},
+    "ultra_deep": {"max_tier": 11, "tier_shift": 1, "description": "200bb+ ultra deep"},
 }
 
 
@@ -99,8 +101,10 @@ class PreflopAction:
 
 def _short_handed_boost(num_players: int) -> int:
     """Widen opening ranges for short-handed tables (fewer players = less risk)."""
-    if num_players <= 3:
-        return 3
+    if num_players <= 2:
+        return 4
+    elif num_players <= 3:
+        return 2
     elif num_players <= 4:
         return 2
     elif num_players <= 6:
@@ -146,7 +150,8 @@ def get_preflop_advice(
     if facing_raise:
         call_tier = CALL_OPEN_TIERS.get(position, 4) + sh_boost
         three_bet_tier = THREE_BET_TIERS.get(position, 2) + (sh_boost // 2)
-        if tier <= three_bet_tier:
+        is_small_pair = len(hand) == 2 and hand[0] == hand[1] and RANK_INDEX[hand[0]] <= RANK_INDEX["6"]
+        if tier <= three_bet_tier and not is_small_pair:
             return PreflopAction.THREE_BET, 0.75
         if tier <= call_tier:
             return PreflopAction.CALL, 0.7

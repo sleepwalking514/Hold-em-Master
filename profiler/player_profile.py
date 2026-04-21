@@ -15,23 +15,23 @@ STAT_NAMES = [
 ]
 
 DEFAULT_PRIORS = {
-    "vpip": (3, 3),
-    "pfr": (2, 4),
+    "vpip": (2, 4),
+    "pfr": (1, 4),
     "three_bet_pct": (1, 6),
-    "aggression_freq": (3, 4),
-    "wtsd": (2, 5),
-    "wsd": (3, 3),
-    "cbet_flop": (3, 3),
-    "cbet_turn": (2, 4),
-    "fold_to_cbet": (3, 3),
-    "fold_to_3bet": (3, 3),
-    "bet_fold_freq": (2, 4),
-    "fold_to_river_bet": (3, 3),
+    "aggression_freq": (2, 3),
+    "wtsd": (1, 3),
+    "wsd": (2, 2),
+    "cbet_flop": (2, 2),
+    "cbet_turn": (1, 3),
+    "fold_to_cbet": (2, 2),
+    "fold_to_3bet": (2, 2),
+    "bet_fold_freq": (1, 3),
+    "fold_to_river_bet": (2, 2),
     "squeeze": (1, 6),
-    "steal": (2, 5),
-    "bb_fold_to_steal": (3, 3),
-    "bb_3bet_vs_steal": (1, 5),
-    "sb_fold_to_steal": (3, 3),
+    "steal": (1, 3),
+    "bb_fold_to_steal": (2, 2),
+    "bb_3bet_vs_steal": (1, 4),
+    "sb_fold_to_steal": (2, 2),
 }
 
 
@@ -220,8 +220,11 @@ class PlayerProfile:
 
     @property
     def style_label(self) -> str:
+        vpip_conf = self.get_confidence("vpip")
+        aggr_conf = self.get_confidence("aggression_freq")
+        if (vpip_conf + aggr_conf) / 2 < 0.30:
+            return "未知"
         vpip = self.get_stat("vpip")
-        pfr = self.get_stat("pfr")
         aggr = self.get_stat("aggression_freq")
         if vpip < 0.18:
             return "紧凶TAG" if aggr > 0.40 else "紧弱"

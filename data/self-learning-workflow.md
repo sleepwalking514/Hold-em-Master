@@ -1,192 +1,257 @@
-# 自我学习流程设计
+# 自我学习流程设计（基于Session分析报告）
 
 ## 流程概述
 
-每积累10手进入翻后的对局（非preflop fold），触发一次批量复盘。复盘聚焦两个维度：
-1. 对手画像调整是否合理
-2. Advisor建议是否合理
+学习目录在data/hands下
+
+每个session结束后，利用 `analysis/` 目录下的7份分析报告进行系统性复盘。
+不再逐手审查，而是以报告为入口，仅在发现问题时抽查具体hand.json验证。
+
+**核心原则：**
+- 报告驱动，非逐手驱动
+- 效果优先 >> 实现难度
+- 跨session对比追踪改善趋势
+
+**分析报告清单（每session自动生成）：**
+1. `convergence_analysis` — 画像收敛速度与准确度
+2. `decision_quality_analysis` — 决策质量与confidence校准
+3. `exploit_effectiveness_analysis` — 剥削策略效果
+4. `bleed_pattern_analysis` — 慢性失血模式
+5. `equity_trajectory_analysis` — equity轨迹与止损
+6. `catastrophic_hands_analysis` — 巨亏手深度分析
+7. `positional_leak_analysis` — 位置漏洞
 
 ---
 
-## 第一步：筛选有效样本
+## 第一步：快速健康检查（5分钟）
 
-从最近的手牌中筛选出"有信息量"的手牌：
+读取本session的7份分析报告摘要行，建立全局印象：
 
-**入选条件**（满足任一）：
-- Hero进入了翻后（至少看到flop）
-- Hero在preflop面对加注做了call/raise决策
-- 手牌到了showdown（无论Hero是否参与）
-- Hero损失超过50bb的手牌
+| 报告 | 关注指标 | 红线 |
+|------|---------|------|
+| convergence | 平均收敛分数、已收敛对手数 | <40%且60手后无改善 |
+| decision_quality | 校准偏差、系统性过度自信 | 平均校准误差>25% |
+| exploit | 胜率、高/低置信度盈亏差 | 低置信度exploit亏损 |
+| bleed | 失血速率(bb/hand)、偷盲成功率 | >2bb/hand失血 |
+| equity_trajectory | 下降模式手数占比 | 下降模式>40%且无止损 |
+| catastrophic | 巨亏手数、总巨亏BB | 单session>50BB巨亏 |
+| positional | 位置胜率异常、GTO偏离 | 任一位置偏离GTO>30% |
 
-**排除条件**：
-- 纯preflop fold且无对手showdown信息
-- 盲注轮转中无人加注的walk
-
-每次复盘取10手有效样本。
-
----
-
-## 第二步：画像合理性审计
-
-对每手牌中出现的对手画像标签，检查以下问题：
-
-### 2.1 标签稳定性检查
-
-```
-对每个对手，记录最近20手中的标签变化序列：
-- 如果标签在5手内来回切换（如 LAG→Maniac→LAG），标记为"标签震荡"
-- 震荡原因通常是：置信度公式过于激进 + 样本边界效应
-```
-
-### 2.2 画像→行为一致性检查
-
-```
-对每个被标记为特定风格的对手，验证：
-- 标记为"紧凶TAG"的对手：实际VPIP是否<26%？PFR是否>38%？
-- 标记为"疯子Maniac"的对手：实际VPIP是否>42%？
-- 如果标签与实际统计数据矛盾，标记为"标签失真"
-```
-
-### 2.3 画像信息利用率检查
-
-```
-对每手牌的advisor建议，检查：
-- 画像中识别出的exploit机会（如"fold_to_3bet高"）是否被实际利用？
-- 如果advisor建议fold，但画像显示对手有明显可exploit的弱点，标记为"exploit未执行"
-- 统计：exploit识别次数 vs exploit实际执行次数 → 计算利用率
-```
+**输出：** 标记本session的1-3个重点问题领域，进入深入分析。
 
 ---
 
-## 第三步：Advisor建议合理性审计
+## 第二步：画像收敛审计
 
-### 3.1 翻前决策审计
+基于 `convergence_analysis` 报告：
 
-对每个preflop决策点：
-
-| 检查项 | 判定标准 | 问题标签 |
-|--------|---------|---------|
-| 位置利用 | BTN/CO位equity>35%却fold | "位置浪费" |
-| 3bet机会 | 对手fold_to_3bet>50%却从不3bet | "3bet缺失" |
-| 范围过紧 | SB vs BB单挑，equity>40%却fold | "HU范围过紧" |
-| 多人底池误判 | 2人底池被标记为"多人底池" | "人数误判" |
-
-### 3.2 翻后决策审计
-
-对每个postflop决策点：
-
-| 检查项 | 判定标准 | 问题标签 |
-|--------|---------|---------|
-| 低equity call | equity<30%在river call | "亏损call" |
-| exploit误用 | "对手激进→多call down"但Hero牌力为TRASH | "exploit反噬" |
-| 下注尺寸 | value bet时对手fold_to_cbet<30%却用大尺寸 | "尺寸不当" |
-| 止损缺失 | equity从flop到river持续下降(>20pp)但全程call | "无止损" |
-| SPR忽视 | SPR<1时还在check而非push | "SPR误用" |
-
-### 3.3 Equity可靠性审计
-
-对到showdown的手牌：
+### 2.1 收敛速度评估
 
 ```
-比较advisor声称的equity vs 实际结果：
-- 如果声称equity>60%但输了，检查range estimation是否合理
-- 如果声称equity<35%但建议call，标记为"阈值失效"
-- 统计：高equity(>60%)手牌的实际胜率 → 如果<50%说明equity系统性高估
+检查每个对手的收敛轨迹：
+- 前期(1-20手)→中期(21-40手)→后期(41-60手)的分数变化
+- 改善速率是否>0？是否存在停滞（连续3个快照无变化）？
+- 退步次数占比是否>20%？
 ```
+
+### 2.2 信息受限指标识别
+
+```
+找出可观测性<70%的指标（如fold_to_cbet、fold_to_3bet）：
+- 这些指标观测次数=0说明场景未触发
+- 判断：是Hero打法导致（如从不cbet）还是对手行为导致？
+- 如果是Hero打法导致 → 标记为"信息采集盲区"
+```
+
+### 2.3 先验偏差检查
+
+```
+对比"后验值"与"纯数据值"：
+- 如果差异>15%且观测数>10，说明先验拉力过强
+- 如果观测数<5但置信度>30%，说明先验权重过高
+- 标记需要调整先验参数的对手类型
+```
+
+**抽查触发条件：** 如果某对手收敛分数<30%且已60手，抽查该对手参与的2-3手hand.json，验证ground truth与学习值的具体偏差来源。
 
 ---
 
-## 第四步：模式识别与问题聚类
+## 第三步：决策质量与Confidence校准审计
 
-将10手牌中发现的问题按类型聚类：
+基于 `decision_quality_analysis` 报告：
 
-### 4.1 频率统计
-
-```
-问题类型          | 出现次数 | 涉及金额 | 严重度
-----------------|---------|---------|-------
-位置浪费          |         |         |
-exploit未执行     |         |         |
-exploit反噬      |         |         |
-亏损call         |         |         |
-HU范围过紧       |         |         |
-标签震荡          |         |         |
-```
-
-### 4.2 因果链分析
-
-对每个高频问题，追溯根因：
+### 3.1 校准偏差诊断
 
 ```
-问题：HU范围过紧
-→ 直接原因：Solid基线查表结果为fold
-→ 根因：基线范围表未区分人数（6人桌范围 vs 3人桌 vs HU）
-→ 影响：每手fold损失0.5bb盲注，100手累计-50bb
+按confidence区间检查：
+- 过度自信区间（实际胜率 << confidence）：equity估算系统性高估
+- 过度保守区间（实际胜率 >> confidence）：可能错过value机会
+- 重点关注：≥0.80区间的实际胜率，这直接影响all-in决策
+```
 
-问题：exploit反噬
-→ 直接原因：exploit规则"high_aggression_defense"无条件触发call_down
-→ 根因：规则缺少hand_strength前置条件
-→ 影响：单次大额亏损（100-500bb）
+### 3.2 GTO偏离效果评估
+
+```
+从报告中提取：
+- 偏离次数/总决策 → exploit频率是否合理
+- 偏离后盈利比 → <50%说明exploit整体亏损，应收紧
+- 结合exploit_effectiveness报告交叉验证
+```
+
+### 3.3 按街行动分布异常
+
+```
+检查各街的行动分布：
+- preflop fold率是否过高（>50%说明范围过紧）
+- flop/turn check率是否过高（错失value bet机会）
+- river fold率是否过高（被bluff过多）
 ```
 
 ---
 
-## 第五步：生成改进建议
+## 第四步：剥削策略效果审计
 
-### 5.1 参数调整建议
+基于 `exploit_effectiveness_analysis` 报告：
 
-基于观察到的问题，输出具体的参数修改建议：
+### 4.1 规则级盈亏分析
+
+```
+对每条exploit规则：
+- 触发次数、胜率、平均盈亏
+- 胜率<40%的规则 → 标记为"待修正"
+- 平均盈亏为负的规则 → 标记为"有害规则"
+```
+
+### 4.2 置信度门槛验证
+
+```
+对比高置信度(≥50%) vs 低置信度(<50%)的exploit效果：
+- 如果低置信度exploit平均亏损 → 确认门槛设置合理或需提高
+- 如果高置信度exploit也亏损 → 规则本身有问题，非置信度问题
+```
+
+### 4.3 学习阶段对比
+
+```
+前1/3 session vs 后1/3 session：
+- 后期胜率应>前期（画像更准确）
+- 如果后期反而更差 → 可能存在对手调整或过拟合
+```
+
+---
+
+## 第五步：失血与巨亏诊断
+
+基于 `bleed_pattern_analysis` + `catastrophic_hands_analysis`：
+
+### 5.1 慢性失血源定位
+
+```
+从bleed报告提取：
+- 失血速率(bb/hand) → 目标<1.0
+- 偷盲成功率 → <25%说明偷盲策略需调整
+- 最长连亏段 → 分析主因（翻后亏损 vs 盲注消耗）
+- 翻后弃牌平均已投入 → >5BB说明进入翻后太深才放弃
+```
+
+### 5.2 巨亏手根因分析
+
+```
+对每手巨亏手：
+- 类型分类（overplay/cooler/tilt/bad_call）
+- equity轨迹：在哪条街equity大幅下降？
+- 关键决策点：equity<40%时是否继续投入？
+- 是否可避免？（cooler不可避免，overplay可避免）
+```
+
+**抽查触发条件：** 对每手巨亏手，读取对应hand.json确认advisor当时的建议是否合理。
+
+---
+
+## 第六步：位置与Equity轨迹审计
+
+基于 `positional_leak_analysis` + `equity_trajectory_analysis`：
+
+### 6.1 位置漏洞
+
+```
+- 哪些位置bb/hand为负？
+- VPIP/PFR与GTO偏离>20%的位置 → 需要调整该位置的范围
+- BB弃牌率>60% → 面对偷盲过弱
+- BTN/CO open但偷盲成功率<25% → 对手不fold，需收紧或调整sizing
+```
+
+### 6.2 Equity轨迹模式
+
+```
+- "下降"模式占比 → 高占比说明经常在不利局面继续投入
+- "下降"模式的平均亏损 → 止损是否及时
+- "稳定高位"和"上升"模式的盈利 → 确认value extraction正常
+```
+
+---
+
+## 第七步：跨Session趋势对比
+
+每完成一个session的分析后，与前几个session对比：
+
+### 7.1 核心指标趋势表
+
+```
+指标                    Session N-2   Session N-1   Session N   趋势
+─────────────────────────────────────────────────────────────────
+平均收敛分数              xx%          xx%          xx%        ↑/↓/→
+校准误差                  xx%          xx%          xx%        ↑/↓/→
+Exploit胜率              xx%          xx%          xx%        ↑/↓/→
+失血速率(bb/hand)         xx           xx           xx        ↑/↓/→
+巨亏BB                   xx           xx           xx        ↑/↓/→
+偷盲成功率               xx%          xx%          xx%        ↑/↓/→
+```
+
+### 7.2 改进验证
+
+```
+对上一session提出的改进建议，检查本session是否改善：
+- 同类问题频率是否下降？
+- 是否引入新问题？（回归检查）
+- 如果连续2个session无改善 → 升级为"系统性问题"，需要代码层面修改
+```
+
+---
+
+## 第八步：生成改进建议
+
+### 8.1 按优先级排序
+
+```
+优先级判定：
+P0（立即修复）：导致巨亏的规则缺陷、系统性equity高估
+P1（本轮修复）：失血速率>1.5bb/hand的漏洞、exploit胜率<40%的规则
+P2（观察中）：收敛速度慢但无直接亏损、位置偏离但盈利
+```
+
+### 8.2 建议格式
 
 ```python
-# 示例输出格式
-adjustments = {
-    "preflop_range": {
-        "issue": "HU范围过紧",
-        "current": "SB vs BB: fold K4o (equity 51%)",
-        "suggested": "SB vs BB: open所有equity>45%的手牌",
-        "expected_impact": "+2bb/100hands"
-    },
-    "exploit_guard": {
-        "issue": "exploit反噬",
-        "current": "aggression>40% → call_down无条件",
-        "suggested": "aggression>40% AND hand_strength>=WEAK_MADE → call_down",
-        "expected_impact": "避免TRASH牌call down，减少大额亏损"
-    }
+improvement = {
+    "priority": "P0/P1/P2",
+    "source_report": "哪份分析报告发现的",
+    "issue": "问题描述",
+    "evidence": "报告中的具体数据",
+    "root_cause": "根因分析",
+    "suggested_fix": "具体修改建议",
+    "expected_impact": "预期改善",
+    "verify_in_next_session": "下个session如何验证"
 }
 ```
 
-### 5.2 画像系统建议
-
-```python
-profile_adjustments = {
-    "confidence_threshold": {
-        "issue": "标签震荡",
-        "current": "10手=76%置信度",
-        "suggested": "提高到25手才达到70%置信度",
-    },
-    "exploit_activation": {
-        "issue": "过早exploit",
-        "current": "confidence>40%即激活exploit",
-        "suggested": "confidence>60%才激活，之前用GTO基线",
-    }
-}
-```
-
----
-
-## 第六步：验证与回归测试
-
-每次生成改进建议后，用接下来的10手有效样本验证：
+### 8.3 修改范围控制
 
 ```
-验证指标：
-1. 同类问题是否减少？（频率对比）
-2. 是否引入新问题？（回归检查）
-3. 整体盈亏是否改善？（ROI对比）
-
-如果改善 → 保留调整
-如果恶化 → 回滚并分析原因
-如果无变化 → 保留但降低优先级
+每个session最多输出：
+- P0修复：不限（必须立即处理）
+- P1修复：最多3个（避免同时改太多无法归因）
+- P2观察：记录但不修改，等待更多数据
 ```
 
 ---
@@ -194,9 +259,21 @@ profile_adjustments = {
 ## 执行节奏
 
 ```
-每10手有效样本 → 执行一次完整复盘（步骤1-5）
-每20手有效样本 → 执行一次验证（步骤6）
-每50手有效样本 → 生成一份阶段性报告，更新self-review-report.md
+每个session结束 → 执行步骤1-6（单session分析）
+每3个session → 执行步骤7（跨session趋势对比）
+发现P0问题 → 立即修复，下个session验证
+P1问题 → 下个session前修复
+P2问题 → 累积3个session数据后决定是否修复
 ```
+
+---
+
+## 抽查hand.json的时机
+
+不再常规逐手审查，仅在以下情况抽查：
+1. 巨亏手 → 必查，验证advisor建议合理性
+2. 收敛异常对手 → 抽2-3手，看ground truth与学习值偏差来源
+3. exploit反噬 → 查触发该规则的具体手牌，确认规则逻辑
+4. 校准严重偏差 → 查高confidence但输的手牌，验证equity计算
 
 ---

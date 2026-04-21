@@ -147,6 +147,59 @@ def _plot_skill_estimate(snapshots: list[dict], out_path: Path) -> None:
     plt.close(fig)
 
 
+def _plot_convergence(convergence_path: Path, out_path: Path) -> None:
+    """Plot learning convergence: overall score + per-stat error over time."""
+    with open(convergence_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not data:
+        return
+
+    n_players = len(data)
+    fig, axes = plt.subplots(n_players, 2, figsize=(14, 5 * n_players), squeeze=False)
+
+    for row, player_data in enumerate(data):
+        name = player_data["player_name"]
+        label = player_data["true_label"]
+        snapshots = player_data["snapshots"]
+        if not snapshots:
+            continue
+
+        hand_nums = [s["hand_number"] for s in snapshots]
+        scores = [s["overall_score"] for s in snapshots]
+
+        ax_score = axes[row][0]
+        ax_score.plot(hand_nums, scores, "b-", linewidth=2, label="收敛分数")
+        ax_score.axhline(0.8, color="green", linestyle="--", alpha=0.5, label="收敛阈值")
+        wrong_hands = [s["hand_number"] for s in snapshots if s["wrong_learning_count"] > 0]
+        wrong_scores = [s["overall_score"] for s in snapshots if s["wrong_learning_count"] > 0]
+        if wrong_hands:
+            ax_score.scatter(wrong_hands, wrong_scores, color="red", s=30,
+                           zorder=5, label="错误学习")
+        ax_score.set_title(f"{name} ({label}) - 学习收敛")
+        ax_score.set_xlabel("Hand #")
+        ax_score.set_ylabel("收敛分数")
+        ax_score.set_ylim(-0.05, 1.05)
+        ax_score.legend(fontsize=8)
+        ax_score.grid(True, alpha=0.3)
+
+        ax_err = axes[row][1]
+        stat_names = list(snapshots[0]["stats"].keys())
+        for stat in stat_names:
+            errors = [s["stats"][stat]["error"] for s in snapshots]
+            ax_err.plot(hand_nums, errors, marker=".", markersize=3, label=stat)
+        ax_err.set_title(f"{name} - 各指标误差")
+        ax_err.set_xlabel("Hand #")
+        ax_err.set_ylabel("绝对误差")
+        ax_err.legend(fontsize=8)
+        ax_err.grid(True, alpha=0.3)
+
+    fig.suptitle("学习收敛分析", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def generate_session_charts(session_dir: Path) -> list[Path]:
     """Generate all charts for a session. Returns list of saved image paths."""
     snapshots = _load_snapshots(session_dir)
@@ -161,6 +214,12 @@ def generate_session_charts(session_dir: Path) -> list[Path]:
         p3 = session_dir / "chart_skill_estimate.png"
         _plot_skill_estimate(snapshots, p3)
         saved.append(p3)
+
+    convergence_path = session_dir / "convergence_data.json"
+    if convergence_path.exists():
+        p4 = session_dir / "chart_convergence.png"
+        _plot_convergence(convergence_path, p4)
+        saved.append(p4)
 
     if hands:
         p2 = session_dir / "chart_advisor_quality.png"

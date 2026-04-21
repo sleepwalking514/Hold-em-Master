@@ -80,15 +80,17 @@ class SessionRecorder:
         (self.session_dir / "session_info.txt").write_text(info, encoding="utf-8")
 
     def export_hand(self, gs: GameState, winnings: dict[str, int],
-                    recorder: HandRecorder | None = None) -> Path:
+                    recorder: HandRecorder | None = None,
+                    opponent_labels: dict[str, dict[str, Any]] | None = None,
+                    hero_reads: dict[str, dict[str, Any]] | None = None) -> Path:
         hand_num = gs.hand_number
         txt_path = self.session_dir / f"hand_{hand_num:03d}.txt"
         json_path = self.session_dir / f"hand_{hand_num:03d}.json"
 
-        txt = _build_hand_log(gs, winnings, recorder)
+        txt = _build_hand_log(gs, winnings, recorder, opponent_labels, hero_reads)
         txt_path.write_text(txt, encoding="utf-8")
 
-        data = _build_hand_json(gs, winnings, recorder)
+        data = _build_hand_json(gs, winnings, recorder, opponent_labels, hero_reads)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -130,7 +132,9 @@ class SessionRecorder:
 
 
 def _build_hand_log(gs: GameState, winnings: dict[str, int],
-                    recorder: HandRecorder | None) -> str:
+                    recorder: HandRecorder | None,
+                    opponent_labels: dict[str, dict[str, Any]] | None = None,
+                    hero_reads: dict[str, dict[str, Any]] | None = None) -> str:
     lines: list[str] = []
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines.append(f"{'=' * 50}")
@@ -233,6 +237,38 @@ def _build_hand_log(gs: GameState, winnings: dict[str, int],
             followed_str = "全部采纳" if last.get("all_advice_followed") else "有偏离"
             lines.append(
                 f"  结果: {last['hand_outcome']} ({last['hand_result_net']:+d}) | {followed_str}"
+            )
+
+    if opponent_labels:
+        lines.append(f"\n--- OPPONENT GROUND TRUTH ---")
+        for name, info in opponent_labels.items():
+            label = info.get("label", "?")
+            vpip = info.get("vpip_target", 0)
+            pfr = info.get("pfr_target", 0)
+            aggr = info.get("aggression_freq_target", 0)
+            ftc = info.get("fold_to_cbet", 0)
+            bluff = info.get("bluff_frequency", 0)
+            tilt = info.get("tilt_variance", 0)
+            lines.append(
+                f"  {name}: [{label}] VPIP={vpip:.0%} PFR={pfr:.0%} "
+                f"AF={aggr:.0%} FoldCbet={ftc:.0%} Bluff={bluff:.0%} Tilt={tilt:.2f}"
+            )
+
+    if hero_reads:
+        lines.append(f"\n--- HERO OPPONENT READS (本手结束时) ---")
+        for name, info in hero_reads.items():
+            style = info.get("style", "未知")
+            hands = info.get("total_hands", 0)
+            vpip = info.get("vpip", 0)
+            pfr = info.get("pfr", 0)
+            aggr = info.get("aggression_freq", 0)
+            ftc = info.get("fold_to_cbet", 0)
+            wtsd = info.get("wtsd", 0)
+            conf = info.get("style_confidence", 0)
+            lines.append(
+                f"  {name}: [{style}] (置信度{conf:.0%}, {hands}手) "
+                f"VPIP={vpip:.1%} PFR={pfr:.1%} AF={aggr:.1%} "
+                f"FoldCbet={ftc:.1%} WTSD={wtsd:.1%}"
             )
 
     lines.append(f"\nFinal stacks:")
@@ -356,7 +392,9 @@ def _evaluate_advisor_decisions(
 
 
 def _build_hand_json(gs: GameState, winnings: dict[str, int],
-                     recorder: HandRecorder | None) -> dict[str, Any]:
+                     recorder: HandRecorder | None,
+                     opponent_labels: dict[str, dict[str, Any]] | None = None,
+                     hero_reads: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     hand: dict[str, Any] = {
         "hand_id": gs.hand_number,
         "timestamp": datetime.now().isoformat(),
@@ -406,6 +444,12 @@ def _build_hand_json(gs: GameState, winnings: dict[str, int],
     advisor_eval = _evaluate_advisor_decisions(gs, winnings, recorder)
     if advisor_eval:
         hand["advisor_evaluation"] = advisor_eval
+
+    if opponent_labels:
+        hand["opponent_ground_truth"] = opponent_labels
+
+    if hero_reads:
+        hand["hero_opponent_reads"] = hero_reads
 
     return hand
 

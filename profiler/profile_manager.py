@@ -11,39 +11,39 @@ PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
 
 PRIOR_TEMPLATES: dict[str, dict[str, tuple[float, float]]] = {
     "极紧Nit": {
-        "vpip": (1, 8), "pfr": (1, 8), "three_bet_pct": (1, 9),
-        "aggression_freq": (3, 3), "wtsd": (1, 5), "cbet_flop": (5, 2),
-        "fold_to_cbet": (3, 4), "fold_to_3bet": (5, 2), "steal": (1, 6),
+        "vpip": (1, 5), "pfr": (1, 5), "three_bet_pct": (1, 6),
+        "aggression_freq": (2, 2), "wtsd": (1, 4), "cbet_flop": (3, 1),
+        "fold_to_cbet": (2, 3), "fold_to_3bet": (3, 1), "steal": (1, 4),
     },
     "岩石": {
-        "vpip": (2, 8), "pfr": (2, 7), "three_bet_pct": (1, 7),
-        "aggression_freq": (3, 3), "wtsd": (2, 5), "cbet_flop": (5, 2),
-        "fold_to_cbet": (3, 3), "fold_to_3bet": (4, 2), "steal": (1, 5),
+        "vpip": (1, 5), "pfr": (1, 4), "three_bet_pct": (1, 5),
+        "aggression_freq": (2, 2), "wtsd": (1, 4), "cbet_flop": (3, 1),
+        "fold_to_cbet": (2, 2), "fold_to_3bet": (3, 1), "steal": (1, 4),
     },
     "紧凶TAG": {
-        "vpip": (3, 7), "pfr": (3, 7), "three_bet_pct": (1, 6),
-        "aggression_freq": (4, 3), "wtsd": (2, 5), "cbet_flop": (5, 2),
-        "fold_to_cbet": (3, 3), "fold_to_3bet": (3, 3), "steal": (3, 4),
+        "vpip": (2, 4), "pfr": (2, 4), "three_bet_pct": (1, 4),
+        "aggression_freq": (3, 2), "wtsd": (1, 4), "cbet_flop": (3, 1),
+        "fold_to_cbet": (2, 2), "fold_to_3bet": (2, 2), "steal": (2, 3),
     },
     "松凶LAG": {
-        "vpip": (5, 5), "pfr": (4, 6), "three_bet_pct": (2, 5),
-        "aggression_freq": (5, 2), "wtsd": (2, 5), "cbet_flop": (5, 2),
-        "fold_to_cbet": (3, 4), "fold_to_3bet": (3, 4), "steal": (4, 3),
+        "vpip": (3, 3), "pfr": (2, 4), "three_bet_pct": (1, 3),
+        "aggression_freq": (3, 1), "wtsd": (1, 4), "cbet_flop": (3, 1),
+        "fold_to_cbet": (2, 3), "fold_to_3bet": (2, 3), "steal": (3, 2),
     },
     "疯子Maniac": {
-        "vpip": (7, 3), "pfr": (5, 5), "three_bet_pct": (3, 5),
-        "aggression_freq": (6, 2), "wtsd": (3, 4), "cbet_flop": (6, 2),
-        "fold_to_cbet": (2, 5), "fold_to_3bet": (2, 5), "steal": (5, 2),
+        "vpip": (4, 2), "pfr": (3, 3), "three_bet_pct": (2, 3),
+        "aggression_freq": (4, 1), "wtsd": (2, 3), "cbet_flop": (4, 1),
+        "fold_to_cbet": (1, 4), "fold_to_3bet": (1, 4), "steal": (3, 1),
     },
     "跟注站": {
-        "vpip": (6, 4), "pfr": (1, 8), "three_bet_pct": (1, 7),
-        "aggression_freq": (2, 5), "wtsd": (5, 2), "cbet_flop": (2, 5),
-        "fold_to_cbet": (2, 5), "fold_to_3bet": (3, 4), "steal": (1, 5),
+        "vpip": (4, 2), "pfr": (1, 5), "three_bet_pct": (1, 5),
+        "aggression_freq": (1, 4), "wtsd": (3, 1), "cbet_flop": (1, 4),
+        "fold_to_cbet": (1, 4), "fold_to_3bet": (2, 3), "steal": (1, 4),
     },
     "紧弱": {
-        "vpip": (2, 7), "pfr": (1, 8), "three_bet_pct": (1, 7),
-        "aggression_freq": (2, 5), "wtsd": (2, 5), "cbet_flop": (3, 4),
-        "fold_to_cbet": (4, 3), "fold_to_3bet": (5, 2), "steal": (1, 5),
+        "vpip": (1, 4), "pfr": (1, 5), "three_bet_pct": (1, 5),
+        "aggression_freq": (1, 4), "wtsd": (1, 4), "cbet_flop": (2, 3),
+        "fold_to_cbet": (3, 2), "fold_to_3bet": (3, 1), "steal": (1, 4),
     },
 }
 
