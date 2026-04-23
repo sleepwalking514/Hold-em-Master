@@ -380,6 +380,31 @@ def test_min_raise_after_raise():
     check("re-raise min=50", min_r == 50, f"实际={min_r}")
 
 
+def test_invalid_raise_is_downgraded_to_call():
+    print("\n=== G3: 非前进式 raise 自动降级为 call ===")
+    gs = make_gs([1000, 1000, 1000])
+    p1 = gs.get_player("P1")
+    gs.apply_action(PlayerAction("P1", ActionType.RAISE, amount=10))
+    last = gs.action_history[Street.PREFLOP][-1]
+    check("动作被降级为CALL", last.action_type == ActionType.CALL, f"实际={last.action_type}")
+    check("P1 current_bet 跟到当前下注", p1.current_bet == gs.current_bet, f"实际={p1.current_bet}")
+    check("P1 已行动", p1.has_acted)
+
+
+def test_invalid_raise_without_bet_is_downgraded_to_check():
+    print("\n=== G4: 无下注时无效 raise 自动降级为 check ===")
+    gs = make_gs([1000, 1000])
+    gs.apply_action(PlayerAction("P1", ActionType.CALL, amount=10))
+    gs.apply_action(PlayerAction("P2", ActionType.CHECK))
+    gs.advance_street()
+    p2 = gs.get_player("P2")
+    gs.apply_action(PlayerAction("P2", ActionType.RAISE, amount=0))
+    last = gs.action_history[Street.FLOP][-1]
+    check("动作被降级为CHECK", last.action_type == ActionType.CHECK, f"实际={last.action_type}")
+    check("下注额保持0", gs.current_bet == 0, f"实际={gs.current_bet}")
+    check("P2 已行动", p2.has_acted)
+
+
 
 # ═══════════════════════════════════════════════════
 #  H. new_hand 新手牌重置

@@ -5,6 +5,7 @@ rich>=13.0
 prompt-toolkit>=3.0
 click>=8.0
 pytest
+matplotlib
 
 # Phase 4 (Web版，暂不安装)
 # fastapi>=0.100

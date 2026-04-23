@@ -92,7 +92,7 @@ class AIOpponent:
         if not player.hole_cards or not gs.board:
             return ActionType.CHECK, 0
 
-        hand_rank = EVALUATOR.evaluate(player.hole_cards, gs.board)
+        hand_rank = EVALUATOR.evaluate(gs.board, player.hole_cards)
         strength = 1.0 - (hand_rank / 7462.0)
         draw_bonus = self._draw_bonus(player.hole_cards, gs.board)
         noise = self._rng.gauss(0, self.config.tilt_variance)

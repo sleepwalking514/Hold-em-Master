@@ -158,6 +158,32 @@ class GameState:
             cost = raise_to - player.current_bet
             actual_cost = min(cost, player.stack)
             actual_raise_to = player.current_bet + actual_cost
+
+            # Guard against malformed AI/user actions that do not move the state
+            # forward. Treat them as the passive action the player is actually
+            # able to take instead of resetting the street forever.
+            if actual_raise_to <= self.current_bet:
+                if self.current_bet > player.current_bet:
+                    call_amount = min(self.current_bet - player.current_bet, player.stack)
+                    player.stack -= call_amount
+                    player.current_bet += call_amount
+                    player.street_invested += call_amount
+                    player.total_invested += call_amount
+                    self.pot += call_amount
+                    if player.stack == 0:
+                        player.is_all_in = True
+                        action.is_all_in = True
+                    action.action_type = ActionType.CALL
+                    action.amount = self.current_bet
+                    player.has_acted = True
+                else:
+                    action.action_type = ActionType.CHECK
+                    action.amount = 0
+                    player.has_acted = True
+                action.street = self.street
+                self.action_history[self.street].append(action)
+                return
+
             raise_size = actual_raise_to - self.current_bet
             player.stack -= actual_cost
             player.current_bet = actual_raise_to

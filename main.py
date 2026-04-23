@@ -26,6 +26,12 @@ from profiler.player_profile import PlayerProfile
 from profiler.action_analyzer import ActionRationalityAnalyzer
 
 STREET_CARD_COUNT = {Street.FLOP: 3, Street.TURN: 1, Street.RIVER: 1}
+MAX_ACTIONS_PER_STREET_FACTOR = 12
+
+
+def _reset_advisor_hand(advisor: Advisor | None) -> None:
+    if advisor is not None:
+        advisor.reset_hand()
 
 
 def read_player_cards(gs: GameState, player_name: str, count: int = 2) -> list[int]:
@@ -266,7 +272,10 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None,
     if len(action_order) <= 1 and gs.street != Street.PREFLOP:
         return len(gs.players_in_hand) > 1
 
+    action_count = 0
+    max_actions = max(24, len(gs.players) * MAX_ACTIONS_PER_STREET_FACTOR)
     while not gs.is_street_over():
+        progress_made = False
         for player in gs.get_action_order():
             if player.has_acted:
                 continue
@@ -285,6 +294,8 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None,
 
             action = read_player_action(player, gs, advice)
             gs.apply_action(action)
+            progress_made = True
+            action_count += 1
             display_message(f"  {action}", style="dim")
 
             if hand_rec:
@@ -298,6 +309,17 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None,
                 return False
             if gs.is_street_over():
                 break
+
+            if action_count >= max_actions:
+                raise RuntimeError(
+                    f"Street {gs.street.name} exceeded {max_actions} actions; "
+                    "aborting to avoid an infinite loop"
+                )
+
+        if not progress_made:
+            raise RuntimeError(
+                f"Street {gs.street.name} made no progress; aborting to avoid an infinite loop"
+            )
 
     return len(gs.players_in_hand) > 1
 
@@ -849,6 +871,7 @@ def _estimate_pot_sizes(gs: GameState) -> dict[Street, int]:
 
 def play_hand(gs: GameState, hero_name: str, advisor: Advisor | None = None,
               session_rec: SessionRecorder | None = None) -> None:
+    _reset_advisor_hand(advisor)
     hand_rec = HandRecorder()
     display_table(gs, hero_name)
     deal_hole_cards(gs, hero_name)
@@ -943,8 +966,8 @@ def _pick_style_interactive(player_name: str) -> str:
         display_error("无效选择")
 
 
-def quick_sim_session() -> tuple[GameState, str, dict[str, "AIOpponent"]]:
-    """快速启动：5个随机风格AI对手。"""
+def quick_sim_session(num_ai_opponents: int = 5) -> tuple[GameState, str, dict[str, "AIOpponent"]]:
+    """快速启动：默认5个随机风格AI对手。"""
     import random as _rng
     from testing.simulation.label_presets import get_preset, all_labels
     from testing.simulation.ai_opponent import AIOpponent
@@ -954,7 +977,7 @@ def quick_sim_session() -> tuple[GameState, str, dict[str, "AIOpponent"]]:
     players = [Player(name=hero_name, stack=1000)]
     ai_opponents: dict[str, AIOpponent] = {}
 
-    for i in range(5):
+    for i in range(num_ai_opponents):
         name = f"AI_{i+1}"
         label = _rng.choice(labels)
         ai_opponents[name] = AIOpponent(get_preset(label))
@@ -998,7 +1021,7 @@ def setup_sim_session() -> tuple[GameState, str, dict[str, "AIOpponent"]]:
 
 
 def sim_deal_hole_cards(gs: GameState, hero_name: str) -> None:
-    """Sim模式发牌：hero手动输入或随机，AI自动随机。
+    """Sim模式发牌：hero与AI都自动随机。
 
     AI底牌不加入gs.used_cards，避免advisor的equity计算排除这些牌（信息泄露）。
     用gs._sim_all_dealt追踪所有已发牌防重复。
@@ -1006,7 +1029,7 @@ def sim_deal_hole_cards(gs: GameState, hero_name: str) -> None:
     gs._sim_all_dealt = set(gs.used_cards)
     for p in gs.players:
         if p.name == hero_name:
-            p.hole_cards = read_player_cards(gs, "__hero__")
+            p.hole_cards = random_cards(2, gs._sim_all_dealt)
             display_hero_cards(p.hole_cards)
             gs._sim_all_dealt.update(p.hole_cards)
         else:
@@ -1024,7 +1047,10 @@ def sim_play_street(
     if len(action_order) <= 1 and gs.street != Street.PREFLOP:
         return len(gs.players_in_hand) > 1
 
+    action_count = 0
+    max_actions = max(24, len(gs.players) * MAX_ACTIONS_PER_STREET_FACTOR)
     while not gs.is_street_over():
+        progress_made = False
         for player in gs.get_action_order():
             if player.has_acted:
                 continue
@@ -1054,6 +1080,8 @@ def sim_play_street(
                 action = PlayerAction(player.name, ActionType.FOLD)
 
             gs.apply_action(action)
+            progress_made = True
+            action_count += 1
             display_message(f"  {action}", style="dim")
 
             if hand_rec:
@@ -1067,6 +1095,17 @@ def sim_play_street(
                 return False
             if gs.is_street_over():
                 break
+
+            if action_count >= max_actions:
+                raise RuntimeError(
+                    f"Street {gs.street.name} exceeded {max_actions} actions; "
+                    "aborting to avoid an infinite loop"
+                )
+
+        if not progress_made:
+            raise RuntimeError(
+                f"Street {gs.street.name} made no progress; aborting to avoid an infinite loop"
+            )
 
     return len(gs.players_in_hand) > 1
 
@@ -1114,6 +1153,7 @@ def sim_play_hand(
     session_rec: SessionRecorder | None = None,
 ) -> None:
     """Sim模式的一手牌完整流程。"""
+    _reset_advisor_hand(advisor)
     hand_rec = HandRecorder()
     display_table(gs, hero_name)
     sim_deal_hole_cards(gs, hero_name)
@@ -1268,7 +1308,10 @@ def sim_auto_play_street(
     if len(action_order) <= 1 and gs.street != Street.PREFLOP:
         return len(gs.players_in_hand) > 1
 
+    action_count = 0
+    max_actions = max(24, len(gs.players) * MAX_ACTIONS_PER_STREET_FACTOR)
     while not gs.is_street_over():
+        progress_made = False
         for player in gs.get_action_order():
             if player.has_acted:
                 continue
@@ -1301,6 +1344,8 @@ def sim_auto_play_street(
                 action = PlayerAction(player.name, ActionType.FOLD)
 
             gs.apply_action(action)
+            progress_made = True
+            action_count += 1
             display_message(f"  {action}", style="dim")
 
             if hand_rec:
@@ -1315,6 +1360,17 @@ def sim_auto_play_street(
             if gs.is_street_over():
                 break
 
+            if action_count >= max_actions:
+                raise RuntimeError(
+                    f"Street {gs.street.name} exceeded {max_actions} actions; "
+                    "aborting to avoid an infinite loop"
+                )
+
+        if not progress_made:
+            raise RuntimeError(
+                f"Street {gs.street.name} made no progress; aborting to avoid an infinite loop"
+            )
+
     return len(gs.players_in_hand) > 1
 
 
@@ -1323,6 +1379,7 @@ def sim_auto_play_hand(
     ai_opponents: dict[str, "AIOpponent"],
     session_rec: SessionRecorder | None = None,
 ) -> None:
+    _reset_advisor_hand(advisor)
     hand_rec = HandRecorder()
     display_table(gs, hero_name)
     sim_auto_deal_hole_cards(gs)
@@ -1376,8 +1433,8 @@ def sim_auto_play_hand(
     _finish_hand(gs, winnings, hero_name, advisor, session_rec, hand_rec, ai_opponents)
 
 
-def run_sim_auto_mode(max_hands: int = 60) -> None:
-    gs, hero_name, ai_opponents = quick_sim_session()
+def run_sim_auto_mode(max_hands: int = 60, num_ai_opponents: int = 5) -> None:
+    gs, hero_name, ai_opponents = quick_sim_session(num_ai_opponents=num_ai_opponents)
 
     advisor = Advisor()
     profiles = {}
@@ -1506,9 +1563,13 @@ def _generate_end_charts(session_rec: SessionRecorder | None) -> None:
 @click.option("--no-advisor", is_flag=True, help="禁用AI顾问")
 @click.option("--sim", is_flag=True, help="AI对战模式：与AI对手对战")
 @click.option("--sim-auto", is_flag=True, help="全自动模拟：无需任何输入，批量生成数据")
+@click.option("--sim-auto-solo", is_flag=True, help="全自动1v1模拟：Hero 对 1 个随机AI")
 @click.option("--max-hands", type=int, default=60, help="全自动模式最大手数 (默认60)")
 def main(skip_setup: bool, test: bool, no_advisor: bool, sim: bool,
-         sim_auto: bool, max_hands: int) -> None:
+         sim_auto: bool, sim_auto_solo: bool, max_hands: int) -> None:
+    if sim_auto_solo:
+        run_sim_auto_mode(max_hands, num_ai_opponents=1)
+        return
     if sim_auto:
         run_sim_auto_mode(max_hands)
         return
