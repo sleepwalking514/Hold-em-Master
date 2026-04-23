@@ -88,6 +88,10 @@ CALL_OPEN_TIERS = {
     "SB": 6, "BB": 9,
 }
 
+HU_SB_OPEN_TIER = 10
+HU_BB_DEFEND_TIER = 10
+HU_BB_3BET_TIER = 7
+
 
 class PreflopAction:
     FOLD = "fold"

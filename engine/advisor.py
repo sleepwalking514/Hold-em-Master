@@ -179,7 +179,11 @@ class Advisor:
                 profile.get_confidence(s)
                 for s in ("vpip", "pfr", "aggression_freq", "fold_to_cbet")
             ) / 4
-            if avg_conf < 0.20:
+            is_hu = len(gs.players) <= 2
+            conf_threshold = 0.08 if is_hu else 0.20
+            if avg_conf < conf_threshold:
+                if is_hu and profile.prior_type and profile.prior_type != "未知":
+                    self._apply_prior_exploit(adjustments, profile.prior_type)
                 continue
 
             suppress, _ = self.anti_misjudgment.should_suppress_exploit(opp.name, profile)
@@ -224,6 +228,21 @@ class Advisor:
 
         return adjustments
 
+    @staticmethod
+    def _apply_prior_exploit(adjustments: dict, prior_type: str) -> None:
+        """Light exploit adjustments based on prior label before data converges."""
+        if prior_type in ("极紧Nit",):
+            adjustments["increase_bluff"] = True
+            adjustments["fold_more"] = True
+        elif prior_type in ("跟注站",):
+            adjustments["widen_value"] = True
+            adjustments["no_bluff"] = True
+            adjustments["increase_sizing"] = True
+        elif prior_type in ("松凶LAG", "疯子Maniac"):
+            adjustments["call_more"] = True
+        elif prior_type in ("紧凶TAG",):
+            adjustments["fold_more"] = True
+
     def _resolve_preflop(
         self, gs: GameState, hero: Player, baseline: dict,
         equity: float | None, pot_odds_val: float | None,
@@ -236,6 +255,7 @@ class Advisor:
         pot_control = multiway_note is not None and "控池" in multiway_note
 
         not_facing_raise = gs.current_bet <= hero.current_bet
+        is_hu = len(gs.players) <= 2
 
         if hero.position == "BB" and not_facing_raise and action == ActionType.FOLD:
             return ActionType.CHECK, 0, 0.8
@@ -243,12 +263,23 @@ class Advisor:
         # SB raise-or-fold: never open-limp from SB
         if hero.position == "SB" and not_facing_raise and action == ActionType.CALL:
             hand_str = baseline.get("hand", "")
-            from data.preflop_ranges import _hand_tier
+            from data.preflop_ranges import _hand_tier, HU_SB_OPEN_TIER
             tier = _hand_tier(hand_str) if hand_str else 10
-            if tier <= 7:
+            open_tier = HU_SB_OPEN_TIER if len(gs.players) <= 2 else 7
+            if tier <= open_tier:
                 amt = preflop_open_size(gs, hero)
                 return ActionType.RAISE, amt, 0.70
             return ActionType.FOLD, 0, 0.65
+
+        # HU SB open rescue: baseline may fold hands that should be opened heads-up
+        if (is_hu and hero.position == "SB" and not_facing_raise
+                and action == ActionType.FOLD):
+            hand_str = baseline.get("hand", "")
+            from data.preflop_ranges import _hand_tier, HU_SB_OPEN_TIER
+            tier = _hand_tier(hand_str) if hand_str else 10
+            if tier <= HU_SB_OPEN_TIER:
+                amt = preflop_open_size(gs, hero)
+                return ActionType.RAISE, amt, 0.65
 
         if action == ActionType.ALL_IN:
             return ActionType.ALL_IN, hero.stack + hero.current_bet, confidence
@@ -270,7 +301,16 @@ class Advisor:
                 call_amount = gs.current_bet - hero.current_bet
                 if call_amount > 0 and gs.pot > 0:
                     bb_pot_odds = call_amount / (gs.pot + call_amount)
-                    if equity and equity > bb_pot_odds * 0.9 and tier <= 9:
+                    if is_hu:
+                        from data.preflop_ranges import HU_BB_DEFEND_TIER, HU_BB_3BET_TIER
+                        if tier <= HU_BB_3BET_TIER and equity and equity > 0.40:
+                            from engine.gto_baseline import _hero_position_is_ip
+                            is_ip = _hero_position_is_ip(gs, hero.name)
+                            amt = preflop_3bet_size(gs, hero, is_ip)
+                            return ActionType.RAISE, amt, 0.65
+                        if tier <= HU_BB_DEFEND_TIER:
+                            return ActionType.CALL, gs.current_bet, 0.55
+                    elif equity and equity > bb_pot_odds * 0.9 and tier <= 9:
                         return ActionType.CALL, gs.current_bet, 0.55
 
             # Widen call range vs frequent 3bettors
@@ -290,7 +330,8 @@ class Advisor:
                 if tier <= call_tier and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
                     return ActionType.CALL, gs.current_bet, 0.55
             elif preflop_raise_count >= 1:
-                if tier <= 4 and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
+                rescue_tier = 7 if is_hu else 4
+                if tier <= rescue_tier and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
                     return ActionType.CALL, gs.current_bet, 0.55
             else:
                 if tier <= 8 and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
@@ -301,7 +342,10 @@ class Advisor:
             return ActionType.FOLD, 0, confidence
 
         if action == ActionType.CALL:
-            if equity and pot_odds_val and equity < pot_odds_val * 0.8:
+            eq_fold_mult = 0.8
+            if is_hu and hero.position == "BB":
+                eq_fold_mult = 0.6
+            if equity and pot_odds_val and equity < pot_odds_val * eq_fold_mult:
                 return ActionType.FOLD, 0, 0.60
             # Tighten up in multiway 3bet pots
             preflop_callers = sum(
@@ -476,6 +520,11 @@ class Advisor:
                     and discounted_eq >= min_eq
                     and strength.value >= HandStrength.WEAK_MADE.value):
                 return ActionType.CALL, gs.current_bet, 0.50
+            # HU float: call in position on flop with reasonable equity
+            if len(gs.players) <= 2 and gs.street == Street.FLOP:
+                from engine.gto_baseline import _hero_position_is_ip as _ip_float
+                if _ip_float(gs, hero.name) and equity and equity > 0.32:
+                    return ActionType.CALL, gs.current_bet, 0.50
             return ActionType.FOLD, 0, confidence
 
         if action == ActionType.CALL:
@@ -485,10 +534,14 @@ class Advisor:
                 return ActionType.FOLD, 0, 0.65
             if final_eq and effective_pot_odds and final_eq < effective_pot_odds * 0.8:
                 return ActionType.FOLD, 0, 0.60
-            # Unpaired overcards with no draw on dry board = fold
+            # Unpaired overcards with no draw on dry board = fold (skip in HU flop IP)
+            hu_flop_ip = False
+            if len(gs.players) <= 2 and gs.street == Street.FLOP:
+                from engine.gto_baseline import _hero_position_is_ip as _ip_trash
+                hu_flop_ip = _ip_trash(gs, hero.name)
             if (strength is not None
                     and strength.value <= HandStrength.TRASH.value
-                    and gs.board):
+                    and gs.board and not hu_flop_ip):
                 from env.board_texture import analyze_board as _ab
                 board_tex = _ab(gs.board)
                 if board_tex.is_dry:
@@ -496,7 +549,8 @@ class Advisor:
             # TRASH with no draw should not call even if equity looks ok
             if (strength is not None
                     and strength.value <= HandStrength.TRASH.value
-                    and gs.street != Street.PREFLOP):
+                    and gs.street != Street.PREFLOP
+                    and not hu_flop_ip):
                 return ActionType.FOLD, 0, 0.60
             # WEAK_MADE on dangerous boards should fold facing bets
             if (strength is not None
@@ -719,6 +773,14 @@ class Advisor:
             return True
         if strength.value >= HandStrength.STRONG_DRAW.value:
             return True
+        is_hu = len(gs.players) <= 2
+        if is_hu:
+            if strength.value >= HandStrength.MEDIUM_DRAW.value:
+                return True
+            if equity and equity > 0.30:
+                from env.board_texture import analyze_board as _ab_hu_cbet
+                if _ab_hu_cbet(gs.board).is_dry:
+                    return True
         return False
 
     def _is_check_raise_spot(
@@ -784,6 +846,9 @@ class Advisor:
         if (equity and equity > 0.30
                 and strength.value >= HandStrength.MEDIUM_DRAW.value
                 and gs.street == Street.TURN):
+            return True
+        is_hu = len(gs.players) <= 2
+        if is_hu and equity and equity > 0.30:
             return True
         return False
 
@@ -999,10 +1064,13 @@ class Advisor:
         if min_hands >= 20:
             return equity
         ratio = min_hands / 20
+        is_hu = len(gs.players) <= 2
         if gs.street == Street.PREFLOP:
-            discount = 0.85 + 0.15 * ratio
+            floor = 0.92 if is_hu else 0.85
+            discount = floor + (1.0 - floor) * ratio
         else:
-            discount = 0.80 + 0.20 * ratio
+            floor = 0.88 if is_hu else 0.80
+            discount = floor + (1.0 - floor) * ratio
         return equity * discount
 
     def _adjust_equity_vs_tight_allin(

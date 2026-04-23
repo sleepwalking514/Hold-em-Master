@@ -1240,8 +1240,13 @@ def run_sim_mode(skip_setup: bool = False) -> None:
         player_names=[p.name for p in gs.players],
     )
 
+    first_hand = True
     try:
         while True:
+            if not first_hand:
+                gs.new_hand()
+            first_hand = False
+
             if len(gs.players) < 2:
                 display_message("玩家不足，游戏结束", style="bold red")
                 break
@@ -1266,8 +1271,6 @@ def run_sim_mode(skip_setup: bool = False) -> None:
             cont = input("\n按 Enter 继续下一手, Q 退出: ").strip().upper()
             if cont == "Q":
                 break
-
-            gs.new_hand()
 
     except KeyboardInterrupt:
         display_message("\n\n游戏结束!", style="bold yellow")
@@ -1484,6 +1487,9 @@ def run_sim_auto_mode(max_hands: int = 60, num_ai_opponents: int = 5) -> None:
 
     try:
         for hand_idx in range(max_hands):
+            if hand_idx > 0:
+                gs.new_hand()
+
             if len(gs.players) < 2:
                 display_message("玩家不足，游戏结束", style="bold red")
                 break
@@ -1519,8 +1525,6 @@ def run_sim_auto_mode(max_hands: int = 60, num_ai_opponents: int = 5) -> None:
             if len(gs.players) < 2:
                 display_message("玩家不足，游戏结束", style="bold red")
                 break
-
-            gs.new_hand()
 
     except KeyboardInterrupt:
         display_message("\n\n模拟提前终止!", style="bold yellow")
@@ -1614,8 +1618,13 @@ def main(skip_setup: bool, test: bool, no_advisor: bool, sim: bool,
         player_names=[p.name for p in gs.players],
     )
 
+    first_hand = True
     try:
         while True:
+            if not first_hand:
+                gs.new_hand()
+            first_hand = False
+
             if len(gs.players) < 2:
                 display_message("玩家不足，游戏结束", style="bold red")
                 break
@@ -1630,8 +1639,6 @@ def main(skip_setup: bool, test: bool, no_advisor: bool, sim: bool,
             cont = input("\n按 Enter 继续下一手, Q 退出: ").strip().upper()
             if cont == "Q":
                 break
-
-            gs.new_hand()
 
     except KeyboardInterrupt:
         display_message("\n\n游戏结束!", style="bold yellow")
