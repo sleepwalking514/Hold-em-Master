@@ -326,11 +326,22 @@ class Advisor:
             three_bet_widen = 2 if opp_3bet_freq > 0.35 else (1 if opp_3bet_freq > 0.25 else 0)
 
             if preflop_raise_count >= 2:
-                call_tier = 2 + three_bet_widen
+                from data.preflop_ranges import CALL_3BET_TIERS
+                base_call_tier = CALL_3BET_TIERS.get(hero.position, 3)
+                if is_hu:
+                    base_call_tier = max(base_call_tier, 7)
+                call_tier = base_call_tier + three_bet_widen
+                if tier <= 2 and equity and equity > 0.40:
+                    from engine.gto_baseline import _hero_position_is_ip
+                    is_ip = _hero_position_is_ip(gs, hero.name)
+                    amt = preflop_4bet_size(gs, hero, is_ip)
+                    return ActionType.RAISE, amt, 0.70
                 if tier <= call_tier and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
                     return ActionType.CALL, gs.current_bet, 0.55
             elif preflop_raise_count >= 1:
-                rescue_tier = 7 if is_hu else 4
+                rescue_tier = 7 if is_hu else 6
+                if hero.position in ("CO", "BTN", "SB"):
+                    rescue_tier = max(rescue_tier, 7)
                 if tier <= rescue_tier and equity and pot_odds_val and equity > pot_odds_val * eq_mult:
                     return ActionType.CALL, gs.current_bet, 0.55
             else:
@@ -388,9 +399,13 @@ class Advisor:
             )
             if opp_raise_count >= 2:
                 hand_str = baseline.get("hand", "")
-                from data.preflop_ranges import _hand_tier
+                from data.preflop_ranges import _hand_tier, CALL_3BET_TIERS
                 tier = _hand_tier(hand_str) if hand_str else 10
-                if tier > 2:
+                if tier <= 2:
+                    pass  # continue to raise/4bet
+                elif tier <= CALL_3BET_TIERS.get(hero.position, 3) + (3 if is_hu else 0):
+                    return ActionType.CALL, gs.current_bet, 0.60
+                else:
                     return ActionType.FOLD, 0, 0.70
             if preflop_action in (PreflopAction.THREE_BET, PreflopAction.FOUR_BET):
                 from engine.gto_baseline import _hero_position_is_ip
@@ -405,13 +420,14 @@ class Advisor:
 
         return action, 0, confidence
 
-    def _min_call_equity(self, street: Street) -> float:
+    def _min_call_equity(self, street: Street, num_players: int = 6) -> float:
         """Minimum equity required to call on each street — hard floor."""
+        hu = num_players <= 2
         if street == Street.RIVER:
-            return 0.33
+            return 0.28 if hu else 0.33
         elif street == Street.TURN:
-            return 0.40
-        return 0.30
+            return 0.33 if hu else 0.40
+        return 0.25 if hu else 0.30
 
     def _ev_based_confidence(
         self, action: ActionType, equity: float | None,
@@ -489,7 +505,7 @@ class Advisor:
         action = baseline["action"]
         confidence = baseline["confidence"]
         strength = baseline.get("hand_strength", HandStrength.WEAK_MADE)
-        min_eq = self._min_call_equity(gs.street)
+        min_eq = self._min_call_equity(gs.street, len(gs.players))
 
         pot_control = multiway_note is not None and "控池" in multiway_note
         if pot_control:
@@ -520,10 +536,13 @@ class Advisor:
                     and discounted_eq >= min_eq
                     and strength.value >= HandStrength.WEAK_MADE.value):
                 return ActionType.CALL, gs.current_bet, 0.50
-            # HU float: call in position on flop with reasonable equity
-            if len(gs.players) <= 2 and gs.street == Street.FLOP:
+            # HU float: call in position on flop/turn with reasonable equity
+            if len(gs.players) <= 2:
                 from engine.gto_baseline import _hero_position_is_ip as _ip_float
-                if _ip_float(gs, hero.name) and equity and equity > 0.32:
+                is_ip_hu = _ip_float(gs, hero.name)
+                if gs.street == Street.FLOP and is_ip_hu and equity and equity > 0.30:
+                    return ActionType.CALL, gs.current_bet, 0.50
+                if gs.street == Street.TURN and is_ip_hu and equity and equity > 0.35:
                     return ActionType.CALL, gs.current_bet, 0.50
             return ActionType.FOLD, 0, confidence
 
@@ -629,6 +648,13 @@ class Advisor:
                 if board_tex.is_wet:
                     amt = select_bet_size(gs, hero, strength, gs.pot, False)
                     return ActionType.BET, amt, 0.55
+            # HU stab: bet in position on flop with any reasonable equity
+            if (len(gs.players) <= 2 and is_ip
+                    and gs.street == Street.FLOP
+                    and equity and equity > 0.28
+                    and strength.value >= HandStrength.TRASH.value):
+                amt = select_bet_size(gs, hero, strength, gs.pot, False)
+                return ActionType.BET, amt, 0.55
             # Probe bet: turn/river when previous street checked through
             if self._is_probe_spot(gs, hero, equity, strength):
                 amt = select_bet_size(gs, hero, strength, gs.pot, False)
@@ -716,11 +742,13 @@ class Advisor:
                 else:
                     return ActionType.CHECK, 0, 0.60
             if gs.street == Street.RIVER and equity:
-                river_floor = 0.50
+                river_floor = 0.45 if len(gs.players) <= 2 else 0.50
                 if equity < river_floor:
                     return ActionType.CHECK, 0, 0.60
-            if gs.street == Street.TURN and equity and equity < 0.35:
-                return ActionType.CHECK, 0, 0.60
+            if gs.street == Street.TURN and equity:
+                turn_floor = 0.30 if len(gs.players) <= 2 else 0.35
+                if equity < turn_floor:
+                    return ActionType.CHECK, 0, 0.60
             is_value = strength.value >= HandStrength.MEDIUM_MADE.value
             amt = select_bet_size(gs, hero, strength, gs.pot, is_value)
             if equity and equity > 0.70 and is_value:

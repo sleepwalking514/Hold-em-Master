@@ -39,8 +39,8 @@ def _normalize_hand(rank1: str, rank2: str, suited: bool) -> str:
 POSITION_OPEN_TIERS = {
     "UTG":   5, "UTG+1": 5, "UTG+2": 6,
     "MP":    6, "MP+1":  7,
-    "CO":    7, "BTN":   7,
-    "SB":    6, "BB":    0,
+    "CO":    8, "BTN":   9,
+    "SB":    8, "BB":    0,
 }
 
 STACK_DEPTH_ADJUSTMENTS = {
@@ -81,16 +81,23 @@ THREE_BET_TIERS = {
     "SB": 5, "BB": 5,
 }
 
+CALL_3BET_TIERS = {
+    "UTG": 3, "UTG+1": 3, "UTG+2": 3,
+    "MP": 4, "MP+1": 4,
+    "CO": 5, "BTN": 6,
+    "SB": 6, "BB": 6,
+}
+
 CALL_OPEN_TIERS = {
     "UTG": 3, "UTG+1": 3, "UTG+2": 4,
     "MP": 5, "MP+1": 5,
-    "CO": 6, "BTN": 7,
-    "SB": 6, "BB": 9,
+    "CO": 7, "BTN": 8,
+    "SB": 7, "BB": 10,
 }
 
-HU_SB_OPEN_TIER = 10
-HU_BB_DEFEND_TIER = 10
-HU_BB_3BET_TIER = 7
+HU_SB_OPEN_TIER = 11
+HU_BB_DEFEND_TIER = 11
+HU_BB_3BET_TIER = 8
 
 
 class PreflopAction:
@@ -147,6 +154,9 @@ def get_preflop_advice(
             if effective_bb <= 40:
                 return PreflopAction.PUSH, 0.75
             return PreflopAction.CALL, 0.8
+        call_3bet_tier = CALL_3BET_TIERS.get(position, 3) + sh_boost
+        if tier <= call_3bet_tier:
+            return PreflopAction.CALL, 0.65
         return PreflopAction.FOLD, 0.7
 
     if facing_raise:
@@ -170,7 +180,7 @@ def get_preflop_advice(
     if position == "BB" and not facing_raise:
         raise_tier = 3 + (sh_boost // 2)
         if num_players <= 2:
-            raise_tier = 7
+            raise_tier = 8
         if tier <= raise_tier:
             return PreflopAction.OPEN, 0.75
         return PreflopAction.CHECK, 0.8

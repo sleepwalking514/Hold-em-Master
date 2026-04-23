@@ -317,6 +317,12 @@ def play_street(gs: GameState, hero_name: str, advisor: Advisor | None = None,
                 )
 
         if not progress_made:
+            has_pending = any(
+                p.is_active and not p.is_all_in and not p.has_acted
+                for p in gs.get_action_order()
+            )
+            if not has_pending:
+                break
             raise RuntimeError(
                 f"Street {gs.street.name} made no progress; aborting to avoid an infinite loop"
             )
@@ -1370,6 +1376,13 @@ def sim_auto_play_street(
                 )
 
         if not progress_made:
+            # All players already acted or inactive — street is effectively over
+            has_pending = any(
+                p.is_active and not p.is_all_in and not p.has_acted
+                for p in gs.get_action_order()
+            )
+            if not has_pending:
+                break
             raise RuntimeError(
                 f"Street {gs.street.name} made no progress; aborting to avoid an infinite loop"
             )
