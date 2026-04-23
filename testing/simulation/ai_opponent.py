@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import bisect
 import random
 from typing import Optional
 
-from treys import Evaluator, Card
+from treys import Evaluator, Card, Deck
 
 from env.action_space import ActionType, Street
 from env.game_state import GameState, Player
@@ -13,12 +14,51 @@ EVALUATOR = Evaluator()
 
 _IP_POSITIONS = {"BTN", "CO"}
 _OOP_POSITIONS = {"SB", "BB", "UTG"}
+_ALL_POSITIONS = ["UTG", "MP", "CO", "BTN", "SB", "BB"]
+
+_CALIBRATION_SAMPLES = 10_000
+_CALIBRATION_SEED = 77777
 
 
 class AIOpponent:
     def __init__(self, config: AIOpponentConfig, seed: int | None = None):
         self.config = config
         self._rng = random.Random(seed)
+        self._enter_threshold, self._raise_threshold = self._calibrate_thresholds()
+
+    def _calibrate_thresholds(self) -> tuple[float, float]:
+        """蒙特卡洛校准：找到能产生目标 VPIP/PFR 的 effective_strength 阈值。"""
+        cal_rng = random.Random(_CALIBRATION_SEED)
+        samples: list[float] = []
+        for _ in range(_CALIBRATION_SAMPLES):
+            deck = Deck()
+            cards = deck.draw(2)
+            strength = self._preflop_strength(cards)
+            noise = cal_rng.gauss(0, self.config.tilt_variance)
+            pos = cal_rng.choice(_ALL_POSITIONS)
+            pos_mod = self._position_modifier(pos)
+            eff = max(0.0, min(1.0, strength + noise + pos_mod))
+            samples.append(eff)
+        samples.sort()
+        n = len(samples)
+
+        def find_threshold(target_rate: float) -> float:
+            if target_rate <= 0:
+                return 1.01
+            if target_rate >= 1:
+                return -0.01
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                idx = bisect.bisect_left(samples, mid)
+                rate = (n - idx) / n
+                if rate > target_rate:
+                    lo = mid
+                else:
+                    hi = mid
+            return (lo + hi) / 2
+
+        return find_threshold(self.config.vpip_target), find_threshold(self.config.pfr_target)
 
     def decide(
         self, game_state: GameState, player: Player
@@ -45,8 +85,8 @@ class AIOpponent:
         pos_mod = self._position_modifier(player.position)
         effective_strength = max(0.0, min(1.0, hand_strength + noise + pos_mod))
 
-        enter_threshold = 1.0 - self.config.vpip_target
-        raise_threshold = 1.0 - self.config.pfr_target
+        enter_threshold = self._enter_threshold
+        raise_threshold = self._raise_threshold
 
         if facing_bet:
             pot_odds = call_amount / max(gs.pot + call_amount, 1)
@@ -84,7 +124,7 @@ class AIOpponent:
                 return ActionType.ALL_IN, player.stack + player.current_bet
             return ActionType.RAISE, raise_to
 
-        return ActionType.CALL, gs.current_bet
+        return ActionType.CHECK, 0
 
     def _decide_postflop(
         self, gs: GameState, player: Player
